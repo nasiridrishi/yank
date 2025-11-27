@@ -199,11 +199,18 @@ class PairingServer:
             self._server_socket.listen(1)
             self._server_socket.settimeout(timeout)
 
+            # Get local IP addresses
+            local_ips = self._get_local_ips()
+
             print(f"\n{'='*50}")
             print(f"  PAIRING MODE")
             print(f"{'='*50}")
             print(f"\n  PIN: {self.pin}")
-            print(f"\n  Enter this PIN on the other device.")
+            print(f"\n  On the other device, run:")
+            print(f"")
+            for ip in local_ips:
+                print(f"    ./run.sh join {ip} {self.pin}")
+            print(f"")
             print(f"  Waiting for connection... (timeout: {timeout}s)")
             print(f"{'='*50}\n")
 
@@ -270,6 +277,50 @@ class PairingServer:
             self._running = False
             if self._server_socket:
                 self._server_socket.close()
+
+    def _get_local_ips(self) -> list:
+        """Get list of local IP addresses for display"""
+        ips = []
+        try:
+            # Get all network interfaces
+            hostname = socket.gethostname()
+            # Try to get all IPs associated with hostname
+            try:
+                for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
+                    ip = info[4][0]
+                    if not ip.startswith('127.'):
+                        ips.append(ip)
+            except socket.gaierror:
+                pass
+
+            # Also try connecting to external address to find primary IP
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(('8.8.8.8', 80))
+                primary_ip = s.getsockname()[0]
+                s.close()
+                if primary_ip not in ips:
+                    ips.insert(0, primary_ip)
+            except:
+                pass
+
+            # Remove duplicates while preserving order
+            seen = set()
+            unique_ips = []
+            for ip in ips:
+                if ip not in seen:
+                    seen.add(ip)
+                    unique_ips.append(ip)
+            ips = unique_ips
+
+        except Exception as e:
+            logger.debug(f"Error getting local IPs: {e}")
+
+        # Fallback if no IPs found
+        if not ips:
+            ips = ['<your-ip>']
+
+        return ips
 
     def stop(self):
         """Stop the pairing server"""
