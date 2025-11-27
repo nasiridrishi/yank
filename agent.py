@@ -235,6 +235,7 @@ class SyncAgent:
         Returns True if authenticated, False otherwise
         """
         try:
+            logger.debug(f"Server auth starting - key hash: {hashlib.sha256(key).hexdigest()[:16]}")
             # Generate random challenge
             challenge = os.urandom(32)
 
