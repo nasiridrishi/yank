@@ -249,6 +249,8 @@ class SyncAgent:
                 logger.warning(f"No auth response from {addr}")
                 return False
 
+            logger.debug(f"Auth raw recv ({len(data)} bytes): {data[:50].hex()}...")
+
             parser = MessageParser()
             parser.feed(data)
             result = parser.parse_one()
@@ -640,7 +642,9 @@ class SyncAgent:
             logger.debug(f"Auth - Response: {response.hex()[:16]}...")
 
             # Send response
-            sock.sendall(MessageBuilder.build_auth_response(response))
+            auth_msg = MessageBuilder.build_auth_response(response)
+            logger.debug(f"Auth sending ({len(auth_msg)} bytes): {auth_msg.hex()}...")
+            sock.sendall(auth_msg)
 
             # Wait for success/failure
             data = sock.recv(config.BUFFER_SIZE)

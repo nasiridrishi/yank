@@ -281,10 +281,15 @@ function Stop-Application {
 }
 
 function Restart-Application {
+    param(
+        [string]$PeerIP = "",
+        [switch]$VerboseMode,
+        [switch]$NoSecurityMode
+    )
     Write-Info "Restarting $SessionName..."
     Stop-Application
     Start-Sleep -Seconds 2
-    Start-Application
+    Start-Application -PeerIP $PeerIP -VerboseMode:$VerboseMode -NoSecurityMode:$NoSecurityMode
 }
 
 function Show-Status {
@@ -522,7 +527,7 @@ $configCmd
 switch ($Command) {
     "start"    { Start-Application -PeerIP $Peer -VerboseMode:$VerboseLog -NoSecurityMode:$NoSecurity }
     "stop"     { Stop-Application }
-    "restart"  { Restart-Application }
+    "restart"  { Restart-Application -PeerIP $Peer -VerboseMode:$VerboseLog -NoSecurityMode:$NoSecurity }
     "attach"   { Show-Attach }
     "logs"     { Show-Logs }
     "tail"     { Show-Tail }
