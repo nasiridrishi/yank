@@ -18,6 +18,7 @@
     .\run.ps1 status
 #>
 
+[CmdletBinding()]
 param(
     [Parameter(Position = 0)]
     [string]$Command = "start",
@@ -32,7 +33,8 @@ param(
     [string]$Peer = "",
 
     [Parameter()]
-    [switch]$Verbose,
+    [Alias("v")]
+    [switch]$VerboseLog,
 
     [Parameter()]
     [switch]$NoSecurity
@@ -116,7 +118,7 @@ function Show-Help {
     Write-Host "Process Commands:" -ForegroundColor Yellow
     Write-Host "  start [options]  - Start clipboard sync (default)"
     Write-Host "    -Peer IP       - Connect to specific IP"
-    Write-Host "    -Verbose       - Enable verbose logging"
+    Write-Host "    -VerboseLog    - Enable verbose logging"
     Write-Host "    -NoSecurity    - Disable encryption (not recommended)"
     Write-Host "  stop             - Stop the running application"
     Write-Host "  restart          - Restart the application"
@@ -142,7 +144,7 @@ function Show-Help {
     Write-Host "  .\run.ps1 pair                          # Display PIN for pairing"
     Write-Host "  .\run.ps1 join 192.168.1.5 123456       # Pair with device"
     Write-Host "  .\run.ps1 start                         # Start syncing (encrypted)"
-    Write-Host "  .\run.ps1 start -Verbose                # Start with debug logging"
+    Write-Host "  .\run.ps1 start -VerboseLog             # Start with debug logging"
     Write-Host "  .\run.ps1 start -Peer 192.168.1.5       # Connect to specific IP"
     Write-Host "  .\run.ps1 start -NoSecurity             # Start without encryption"
     Write-Host "  .\run.ps1 config --set sync_text false  # Disable text sync"
@@ -518,7 +520,7 @@ $configCmd
 
 # Main execution
 switch ($Command) {
-    "start"    { Start-Application -PeerIP $Peer -VerboseMode:$Verbose -NoSecurityMode:$NoSecurity }
+    "start"    { Start-Application -PeerIP $Peer -VerboseMode:$VerboseLog -NoSecurityMode:$NoSecurity }
     "stop"     { Stop-Application }
     "restart"  { Restart-Application }
     "attach"   { Show-Attach }
@@ -531,5 +533,5 @@ switch ($Command) {
     "security" { Show-Security }
     "config"   { Show-Config -SetKey $Arg1 -SetValue $Arg2 }
     "help"     { Show-Help }
-    default    { Start-Application -PeerIP $Peer -VerboseMode:$Verbose -NoSecurityMode:$NoSecurity }
+    default    { Start-Application -PeerIP $Peer -VerboseMode:$VerboseLog -NoSecurityMode:$NoSecurity }
 }
