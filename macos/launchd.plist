@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.clipboard-sync.agent</string>
+    
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Update this path to your Python installation -->
+        <string>/usr/bin/python3</string>
+        <string>-m</string>
+        <string>macos.main</string>
+    </array>
+    
+    <key>WorkingDirectory</key>
+    <!-- Update this to your clipboard-sync directory -->
+    <string>/Users/YOUR_USERNAME/clipboard-sync</string>
+    
+    <key>RunAtLoad</key>
+    <true/>
+    
+    <key>KeepAlive</key>
+    <true/>
+    
+    <key>StandardOutPath</key>
+    <string>/tmp/clipboard-sync/stdout.log</string>
+    
+    <key>StandardErrorPath</key>
+    <string>/tmp/clipboard-sync/stderr.log</string>
+    
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>
+<!--
+INSTALLATION:
+1. Edit this file and update:
+   - WorkingDirectory: path to your clipboard-sync folder
+   - ProgramArguments: path to your python3
+
+2. Copy to LaunchAgents:
+   cp launchd.plist ~/Library/LaunchAgents/com.clipboard-sync.agent.plist
+
+3. Load the agent:
+   launchctl load ~/Library/LaunchAgents/com.clipboard-sync.agent.plist
+
+4. To stop:
+   launchctl unload ~/Library/LaunchAgents/com.clipboard-sync.agent.plist
+
+5. Check status:
+   launchctl list | grep clipboard
+-->
