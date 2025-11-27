@@ -111,6 +111,7 @@ tail_logs() {
 }
 
 # Function to restart the session
+# Usage: restart_session [--peer IP] [--verbose] [--no-security]
 restart_session() {
     echo "Restarting session '$SESSION_NAME'..."
     if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
@@ -118,7 +119,7 @@ restart_session() {
         echo "Old session killed."
     fi
     sleep 1
-    start_session
+    start_session "$@"
 }
 
 # Function to stop the session
@@ -207,7 +208,8 @@ case "$COMMAND" in
         tail_logs
         ;;
     restart)
-        restart_session
+        shift  # Remove 'restart' from args
+        restart_session "$@"  # Pass remaining args (--peer, --verbose, etc.)
         ;;
     stop)
         stop_session
