@@ -1,13 +1,18 @@
 #!/bin/bash
 
+# Yank - LAN Clipboard Sync (macOS)
+# This script provides macOS-specific features like LaunchAgent
+
 # Configuration
 SESSION_NAME="clipboard-sync"
 VENV_PATH="venv"
 LOG_DIR="logs"
 LOG_FILE="$LOG_DIR/clipboard-sync.log"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PLIST_NAME="com.nasir.clipboard-sync.plist"
+PLIST_NAME="com.yank.clipboard-sync.plist"
 PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_NAME"
+
+cd "$SCRIPT_DIR"
 
 # Create log directory if it doesn't exist
 mkdir -p "$LOG_DIR"
@@ -15,55 +20,66 @@ mkdir -p "$LOG_DIR"
 # Function to display help
 show_help() {
     cat << EOF
-Usage: ./macrun.sh [COMMAND]
+Yank - LAN Clipboard Sync (macOS)
+
+Usage: ./macrun.sh [COMMAND] [OPTIONS]
 
 Process Commands:
-  start       Start the tmux session in detached mode (default)
-  attach      Attach to running session
-  logs        View the log file
-  tail        Follow log file in real-time
-  restart     Kill and restart the session
-  stop        Stop the running session
-  status      Show session status
+  start [OPTIONS]   Start clipboard sync (default)
+    --peer IP       Connect to specific IP
+    --verbose       Enable verbose logging
+    --no-security   Disable encryption (not recommended)
+  stop              Stop the running session
+  restart           Restart the session
+  attach            Attach to running tmux session
+  logs              View the log file
+  tail              Follow log file in real-time
 
 Security Commands:
   pair              Enter pairing mode (display PIN)
   join <IP> <PIN>   Pair with another device
   unpair            Remove current pairing
-  security          Show security/pairing status
+  status            Show pairing and session status
 
 Configuration:
   config                     Show current configuration
   config --set KEY VALUE     Set a configuration value
   config --reset             Reset to defaults
 
-Auto-Start:
-  install     Install LaunchAgent for auto-start on boot
-  uninstall   Remove LaunchAgent (disable auto-start)
+Auto-Start (macOS):
+  install           Install LaunchAgent for auto-start on login
+  uninstall         Remove LaunchAgent (disable auto-start)
 
 Other:
-  help        Show this help message
+  help              Show this help message
 
 Examples:
   ./macrun.sh pair                          # Display PIN for pairing
   ./macrun.sh join 192.168.1.5 123456       # Pair with device
-  ./macrun.sh start                         # Start syncing
-  ./macrun.sh config                        # View settings
+  ./macrun.sh start                         # Start syncing (encrypted)
+  ./macrun.sh start --verbose               # Start with debug logging
+  ./macrun.sh start --peer 192.168.1.5      # Connect to specific IP
+  ./macrun.sh install                       # Enable auto-start on login
   ./macrun.sh config --set sync_text false  # Disable text sync
 
 Files:
   Config:  sync_config.json
   Ignore:  .syncignore
+  Logs:    $LOG_FILE
 
 EOF
 }
 
 # Function to start the session
+# Usage: start_session [--peer IP] [--verbose] [--no-security]
 start_session() {
     if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
         echo "Session '$SESSION_NAME' already running. Use 'attach' to connect or 'restart' to restart."
         return 1
     fi
+
+    # Build extra arguments
+    local extra_args="$*"
 
     echo "Creating new tmux session '$SESSION_NAME'..."
 
@@ -71,7 +87,7 @@ start_session() {
     tmux new-session -d -s "$SESSION_NAME" -c "$SCRIPT_DIR"
 
     # Activate venv and run the Python module with logging
-    tmux send-keys -t "$SESSION_NAME" "source $VENV_PATH/bin/activate && python -m main start 2>&1 | tee -a $LOG_FILE" Enter
+    tmux send-keys -t "$SESSION_NAME" "source $VENV_PATH/bin/activate && python -m main start $extra_args 2>&1 | tee -a $LOG_FILE" Enter
 
     echo "Session started in detached mode. Use './macrun.sh attach' to connect."
 }
@@ -269,7 +285,8 @@ COMMAND="${1:-start}"
 
 case "$COMMAND" in
     start)
-        start_session
+        shift  # Remove 'start' from args
+        start_session "$@"  # Pass remaining args (--peer, --verbose, etc.)
         ;;
     attach)
         attach_session
@@ -312,6 +329,10 @@ case "$COMMAND" in
         ;;
     help|--help|-h)
         show_help
+        ;;
+    --*)
+        # Handle flags passed directly (./macrun.sh --verbose)
+        start_session "$@"
         ;;
     *)
         echo "Unknown command: $COMMAND"

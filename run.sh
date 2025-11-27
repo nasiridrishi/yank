@@ -5,6 +5,9 @@ SESSION_NAME="clipboard-sync"
 VENV_PATH="venv"
 LOG_DIR="logs"
 LOG_FILE="$LOG_DIR/clipboard-sync.log"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+cd "$SCRIPT_DIR"
 
 # Create log directory if it doesn't exist
 mkdir -p "$LOG_DIR"
@@ -12,22 +15,26 @@ mkdir -p "$LOG_DIR"
 # Function to display help
 show_help() {
     cat << EOF
-Usage: ./run.sh [COMMAND]
+Yank - LAN Clipboard Sync
+
+Usage: ./run.sh [COMMAND] [OPTIONS]
 
 Process Commands:
-  start       Start the tmux session in detached mode (default)
-  attach      Attach to running session
-  logs        View the log file
-  tail        Follow log file in real-time
-  restart     Kill and restart the session
-  stop        Stop the running session
-  status      Show session status
+  start [OPTIONS]   Start clipboard sync (default)
+    --peer IP       Connect to specific IP
+    --verbose       Enable verbose logging
+    --no-security   Disable encryption (not recommended)
+  stop              Stop the running session
+  restart           Restart the session
+  attach            Attach to running tmux session
+  logs              View the log file
+  tail              Follow log file in real-time
 
 Security Commands:
   pair              Enter pairing mode (display PIN)
   join <IP> <PIN>   Pair with another device
   unpair            Remove current pairing
-  security          Show security/pairing status
+  status            Show pairing and session status
 
 Configuration:
   config                     Show current configuration
@@ -35,37 +42,44 @@ Configuration:
   config --reset             Reset to defaults
 
 Other:
-  help        Show this help message
+  help              Show this help message
 
 Examples:
   ./run.sh pair                          # Display PIN for pairing
   ./run.sh join 192.168.1.5 123456       # Pair with device
-  ./run.sh start                         # Start syncing
-  ./run.sh config                        # View settings
+  ./run.sh start                         # Start syncing (encrypted)
+  ./run.sh start --verbose               # Start with debug logging
+  ./run.sh start --peer 192.168.1.5      # Connect to specific IP
+  ./run.sh start --no-security           # Start without encryption
   ./run.sh config --set sync_text false  # Disable text sync
 
 Files:
   Config:  sync_config.json
   Ignore:  .syncignore
+  Logs:    $LOG_FILE
 
 EOF
 }
 
 # Function to start the session
+# Usage: start_session [--peer IP] [--verbose] [--no-security]
 start_session() {
     if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
         echo "Session '$SESSION_NAME' already running. Use 'attach' to connect or 'restart' to restart."
         return 1
     fi
-    
+
+    # Build extra arguments
+    local extra_args="$*"
+
     echo "Creating new tmux session '$SESSION_NAME'..."
-    
+
     # Create new tmux session in detached mode
-    tmux new-session -d -s "$SESSION_NAME" -c "$(pwd)"
-    
+    tmux new-session -d -s "$SESSION_NAME" -c "$SCRIPT_DIR"
+
     # Activate venv and run the Python module with logging
-    tmux send-keys -t "$SESSION_NAME" "source $VENV_PATH/bin/activate && python -m main start 2>&1 | tee -a $LOG_FILE" Enter
-    
+    tmux send-keys -t "$SESSION_NAME" "source $VENV_PATH/bin/activate && python -m main start $extra_args 2>&1 | tee -a $LOG_FILE" Enter
+
     echo "Session started in detached mode. Use './run.sh attach' to connect."
 }
 
@@ -180,7 +194,8 @@ COMMAND="${1:-start}"
 
 case "$COMMAND" in
     start)
-        start_session
+        shift  # Remove 'start' from args
+        start_session "$@"  # Pass remaining args (--peer, --verbose, etc.)
         ;;
     attach)
         attach_session
@@ -217,6 +232,10 @@ case "$COMMAND" in
         ;;
     help|--help|-h)
         show_help
+        ;;
+    --*)
+        # Handle flags passed directly (./run.sh --verbose)
+        start_session "$@"
         ;;
     *)
         echo "Unknown command: $COMMAND"

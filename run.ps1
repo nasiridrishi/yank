@@ -20,14 +20,22 @@
 
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("start", "stop", "restart", "attach", "logs", "tail", "status", "pair", "join", "unpair", "security", "config", "help")]
     [string]$Command = "start",
 
     [Parameter(Position = 1)]
     [string]$Arg1 = "",
 
     [Parameter(Position = 2)]
-    [string]$Arg2 = ""
+    [string]$Arg2 = "",
+
+    [Parameter()]
+    [string]$Peer = "",
+
+    [Parameter()]
+    [switch]$Verbose,
+
+    [Parameter()]
+    [switch]$NoSecurity
 )
 
 # Configuration
@@ -100,25 +108,27 @@ function Get-RunningProcess {
 
 function Show-Help {
     Write-Host ""
-    Write-Host "Clipboard-Sync Process Manager" -ForegroundColor Cyan
-    Write-Host "===============================" -ForegroundColor Cyan
+    Write-Host "Yank - LAN Clipboard Sync" -ForegroundColor Cyan
+    Write-Host "=========================" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "Usage: .\run.ps1 [command] [args]" -ForegroundColor White
+    Write-Host "Usage: .\run.ps1 [command] [options]" -ForegroundColor White
     Write-Host ""
     Write-Host "Process Commands:" -ForegroundColor Yellow
-    Write-Host "  start    - Start the clipboard-sync application in background"
-    Write-Host "  stop     - Stop the running application"
-    Write-Host "  restart  - Restart the application (stop then start)"
-    Write-Host "  attach   - Show the running process information"
-    Write-Host "  logs     - View the complete log file"
-    Write-Host "  tail     - Follow logs in real-time (Ctrl+C to exit)"
-    Write-Host "  status   - Check if the application is running"
+    Write-Host "  start [options]  - Start clipboard sync (default)"
+    Write-Host "    -Peer IP       - Connect to specific IP"
+    Write-Host "    -Verbose       - Enable verbose logging"
+    Write-Host "    -NoSecurity    - Disable encryption (not recommended)"
+    Write-Host "  stop             - Stop the running application"
+    Write-Host "  restart          - Restart the application"
+    Write-Host "  attach           - Show running process information"
+    Write-Host "  logs             - View the complete log file"
+    Write-Host "  tail             - Follow logs in real-time (Ctrl+C to exit)"
     Write-Host ""
     Write-Host "Security Commands:" -ForegroundColor Yellow
     Write-Host "  pair             - Enter pairing mode (display PIN)"
     Write-Host "  join <IP> <PIN>  - Pair with another device"
     Write-Host "  unpair           - Remove current pairing"
-    Write-Host "  security         - Show security/pairing status"
+    Write-Host "  status           - Show pairing and process status"
     Write-Host ""
     Write-Host "Configuration:" -ForegroundColor Yellow
     Write-Host "  config                    - Show current configuration"
@@ -126,13 +136,15 @@ function Show-Help {
     Write-Host "  config --reset            - Reset to defaults"
     Write-Host ""
     Write-Host "Other:" -ForegroundColor Yellow
-    Write-Host "  help     - Display this help message"
+    Write-Host "  help             - Display this help message"
     Write-Host ""
     Write-Host "Examples:" -ForegroundColor Yellow
     Write-Host "  .\run.ps1 pair                          # Display PIN for pairing"
     Write-Host "  .\run.ps1 join 192.168.1.5 123456       # Pair with device"
-    Write-Host "  .\run.ps1 start                         # Start syncing"
-    Write-Host "  .\run.ps1 config                        # View settings"
+    Write-Host "  .\run.ps1 start                         # Start syncing (encrypted)"
+    Write-Host "  .\run.ps1 start -Verbose                # Start with debug logging"
+    Write-Host "  .\run.ps1 start -Peer 192.168.1.5       # Connect to specific IP"
+    Write-Host "  .\run.ps1 start -NoSecurity             # Start without encryption"
     Write-Host "  .\run.ps1 config --set sync_text false  # Disable text sync"
     Write-Host ""
     Write-Host "Files:" -ForegroundColor Gray
@@ -143,6 +155,12 @@ function Show-Help {
 }
 
 function Start-Application {
+    param(
+        [string]$PeerIP = "",
+        [switch]$VerboseMode,
+        [switch]$NoSecurityMode
+    )
+
     if (Test-ProcessRunning) {
         Write-Warn "Application is already running!"
         Write-Info "Use '.\run.ps1 restart' to restart or '.\run.ps1 status' to check status."
@@ -159,6 +177,18 @@ function Start-Application {
 
     Ensure-LogDirectory
 
+    # Build extra arguments
+    $extraArgs = ""
+    if ($PeerIP) {
+        $extraArgs += " --peer $PeerIP"
+    }
+    if ($VerboseMode) {
+        $extraArgs += " --verbose"
+    }
+    if ($NoSecurityMode) {
+        $extraArgs += " --no-security"
+    }
+
     Write-Info "Starting $SessionName..."
 
     # Create a wrapper script that activates venv and runs the application
@@ -167,7 +197,7 @@ Set-Location '$ScriptRoot'
 & '$activateScript'
 `$timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 Add-Content -Path '$LogFile' -Value "`n========================================`n[`$timestamp] Starting $SessionName`n========================================"
-python -m main start 2>&1 | Tee-Object -FilePath '$LogFile' -Append
+python -m main start$extraArgs 2>&1 | Tee-Object -FilePath '$LogFile' -Append
 "@
 
     # Start the process in a new hidden PowerShell window
@@ -488,7 +518,7 @@ $configCmd
 
 # Main execution
 switch ($Command) {
-    "start"    { Start-Application }
+    "start"    { Start-Application -PeerIP $Peer -VerboseMode:$Verbose -NoSecurityMode:$NoSecurity }
     "stop"     { Stop-Application }
     "restart"  { Restart-Application }
     "attach"   { Show-Attach }
@@ -501,5 +531,5 @@ switch ($Command) {
     "security" { Show-Security }
     "config"   { Show-Config -SetKey $Arg1 -SetValue $Arg2 }
     "help"     { Show-Help }
-    default    { Start-Application }
+    default    { Start-Application -PeerIP $Peer -VerboseMode:$Verbose -NoSecurityMode:$NoSecurity }
 }
