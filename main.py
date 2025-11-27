@@ -12,6 +12,7 @@ Features:
 
 Commands:
     python -m main              Start the sync agent
+    python -m main stop         Stop running instance
     python -m main pair         Start pairing mode (display PIN)
     python -m main join IP PIN  Join/pair with another device
     python -m main unpair       Remove pairing
@@ -34,6 +35,7 @@ from common.pairing import (
     PairingServer, PairingClient,
     get_pairing_manager, get_device_name
 )
+from common.singleton import ensure_single_instance, release_singleton, get_existing_instance_pid
 from common.user_config import get_config, get_config_manager, print_config, format_size
 from common.syncignore import get_syncignore, filter_files
 from common.chunked_transfer import format_bytes
@@ -587,8 +589,50 @@ def cmd_config(args):
     print(f"  Edit .syncignore to exclude file types from syncing.\n")
 
 
+def cmd_stop(args):
+    """Stop the running clipboard sync instance"""
+    pid = get_existing_instance_pid()
+
+    if not pid:
+        print("\nNo running instance found.")
+        return
+
+    print(f"\nStopping clipboard-sync (PID {pid})...")
+
+    try:
+        if os.name == 'nt':
+            # Windows - send SIGTERM equivalent
+            import ctypes
+            PROCESS_TERMINATE = 0x0001
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
+            if handle:
+                kernel32.TerminateProcess(handle, 0)
+                kernel32.CloseHandle(handle)
+                print(f"[OK] Stopped process {pid}")
+            else:
+                print(f"[ERROR] Could not stop process {pid} (access denied)")
+        else:
+            # Unix - send SIGTERM
+            os.kill(pid, signal.SIGTERM)
+            print(f"[OK] Sent stop signal to process {pid}")
+    except ProcessLookupError:
+        print(f"[WARN] Process {pid} not found (may have already exited)")
+    except PermissionError:
+        print(f"[ERROR] Permission denied. Try running with sudo/admin.")
+    except Exception as e:
+        print(f"[ERROR] Failed to stop process: {e}")
+
+
 def cmd_start(args):
     """Start the clipboard sync agent"""
+    # Check for existing instance
+    if not ensure_single_instance("clipboard-sync", args.port):
+        existing_pid = get_existing_instance_pid()
+        print(f"\n[ERROR] Another instance is already running (PID {existing_pid})")
+        print(f"Stop the existing instance first, or use '{RUN_SCRIPT} stop'")
+        sys.exit(1)
+
     manager = get_pairing_manager()
 
     if not manager.is_paired():
@@ -597,6 +641,7 @@ def cmd_start(args):
         print("Or use '--no-security' to run without pairing (not recommended).\n")
 
         if not args.no_security:
+            release_singleton()
             sys.exit(1)
 
     if args.verbose:
@@ -612,13 +657,17 @@ def cmd_start(args):
     def signal_handler(sig, frame):
         print("\nShutting down...")
         app.stop()
+        release_singleton()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    app.start()
-    app.run_forever()
+    try:
+        app.start()
+        app.run_forever()
+    finally:
+        release_singleton()
 
 
 def main():
@@ -628,6 +677,7 @@ def main():
         epilog=f"""
 Commands:
   start       Start the clipboard sync agent (default)
+  stop        Stop the running instance
   pair        Enter pairing mode - displays PIN for other device
   join        Pair with another device using IP and PIN
   unpair      Remove current pairing
@@ -662,6 +712,9 @@ Examples:
     join_parser.add_argument('host', nargs='?', help='IP address of device to pair with')
     join_parser.add_argument('pin', nargs='?', help='PIN displayed on other device')
 
+    # Stop command
+    subparsers.add_parser('stop', help='Stop running instance')
+
     # Unpair command
     subparsers.add_parser('unpair', help='Remove current pairing')
 
@@ -687,6 +740,8 @@ Examples:
     # Route to command handler
     if args.command == 'start':
         cmd_start(args)
+    elif args.command == 'stop':
+        cmd_stop(args)
     elif args.command == 'pair':
         cmd_pair(args)
     elif args.command == 'join':
