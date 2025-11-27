@@ -99,6 +99,9 @@ class ClipboardSync:
 
     def start(self):
         """Start the clipboard sync"""
+        # Clean up old temp files from previous sessions
+        config.cleanup_old_temp_files()
+
         logger.info(f"Starting {PLATFORM_NAME} Clipboard Sync...")
 
         # Create sync agent with all callbacks
