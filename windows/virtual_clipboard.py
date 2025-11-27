@@ -468,6 +468,14 @@ class VirtualFileDataObject:
         raise COMException(hresult=winerror.OLE_E_ADVISENOTSUPPORTED)
 
 
+# Keep global reference to prevent garbage collection
+_active_clipboard_data = {
+    'data_object': None,
+    'wrapped': None,
+    'download_callback': None
+}
+
+
 def set_virtual_clipboard(
     files: List[Dict[str, Any]],
     transfer_id: str,
@@ -484,6 +492,8 @@ def set_virtual_clipboard(
     Returns:
         True if successful
     """
+    global _active_clipboard_data
+
     if not HAS_PYWIN32:
         logger.error("pywin32 not available")
         return False
@@ -507,6 +517,12 @@ def set_virtual_clipboard(
         # Wrap as COM object
         wrapped = WrapObject(data_object, pythoncom.IID_IDataObject)
 
+        # IMPORTANT: Keep references to prevent garbage collection!
+        # Without this, Explorer's paste will fail because the objects are gone
+        _active_clipboard_data['data_object'] = data_object
+        _active_clipboard_data['wrapped'] = wrapped
+        _active_clipboard_data['download_callback'] = download_callback
+
         # Set on clipboard (must be done from main thread or STA)
         pythoncom.OleInitialize()
         pythoncom.OleSetClipboard(wrapped)
@@ -521,10 +537,17 @@ def set_virtual_clipboard(
 
 def clear_virtual_clipboard():
     """Clear virtual files from clipboard"""
+    global _active_clipboard_data
+
     if not HAS_PYWIN32:
         return
 
     try:
         pythoncom.OleSetClipboard(None)
+
+        # Clear references
+        _active_clipboard_data['data_object'] = None
+        _active_clipboard_data['wrapped'] = None
+        _active_clipboard_data['download_callback'] = None
     except Exception as e:
         logger.error(f"Failed to clear clipboard: {e}")
