@@ -13,7 +13,10 @@ from dataclasses import dataclass, asdict, field
 logger = logging.getLogger(__name__)
 
 # Default config file location (same directory as the app)
-CONFIG_FILE = Path(__file__).parent.parent / "sync_config.json"
+CONFIG_FILE = Path(__file__).parent.parent / "config.json"
+
+# Conversion constant
+MB = 1024 * 1024
 
 
 @dataclass
@@ -25,10 +28,10 @@ class SyncConfig:
     sync_text: bool = True
     sync_images: bool = True
 
-    # Size limits
-    max_text_size: int = 1 * 1024 * 1024  # 1MB max text
-    max_file_size: int = 100 * 1024 * 1024  # 100MB per file
-    max_total_size: int = 500 * 1024 * 1024  # 500MB total transfer
+    # Size limits (in MB for user-friendliness)
+    max_text_size_mb: int = 1  # 1MB max text
+    max_file_size_mb: int = 100  # 100MB per file
+    max_total_size_mb: int = 500  # 500MB total transfer
 
     # Behavior
     auto_discovery: bool = True
@@ -42,6 +45,19 @@ class SyncConfig:
     ignored_extensions: list = field(default_factory=lambda: [
         ".tmp", ".temp", ".bak", ".swp", ".lock"
     ])
+
+    # Properties to get sizes in bytes (for internal use)
+    @property
+    def max_text_size(self) -> int:
+        return self.max_text_size_mb * MB
+
+    @property
+    def max_file_size(self) -> int:
+        return self.max_file_size_mb * MB
+
+    @property
+    def max_total_size(self) -> int:
+        return self.max_total_size_mb * MB
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -164,9 +180,9 @@ def print_config():
     print(f"    Auto-Discovery: {'ON' if config.auto_discovery else 'OFF'}")
 
     print("\n  Size Limits:")
-    print(f"    Max Text Size:  {format_size(config.max_text_size)}")
-    print(f"    Max File Size:  {format_size(config.max_file_size)}")
-    print(f"    Max Total Size: {format_size(config.max_total_size)}")
+    print(f"    Max Text Size:  {config.max_text_size_mb} MB")
+    print(f"    Max File Size:  {config.max_file_size_mb} MB")
+    print(f"    Max Total Size: {config.max_total_size_mb} MB")
 
     print("\n  Text Sync Options:")
     print(f"    Min Text Length: {config.min_text_length} chars")

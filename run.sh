@@ -91,7 +91,7 @@ EOF
     cat << EOF
 
 Files:
-  Config:  sync_config.json
+  Config:  config.json
   Ignore:  .syncignore
   Logs:    $LOG_FILE
 

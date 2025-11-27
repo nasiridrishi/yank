@@ -52,7 +52,7 @@ data/
 pairing_data.json
 
 # User config (users may customize)
-sync_config.json
+config.json
 
 # Temp files
 temp/

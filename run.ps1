@@ -151,7 +151,7 @@ function Show-Help {
     Write-Host "  .\run.ps1 config --set sync_text false  # Disable text sync"
     Write-Host ""
     Write-Host "Files:" -ForegroundColor Gray
-    Write-Host "  Config:     sync_config.json"
+    Write-Host "  Config:     config.json"
     Write-Host "  Ignore:     .syncignore"
     Write-Host "  Log File:   $LogFile"
     Write-Host ""
