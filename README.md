@@ -1,8 +1,14 @@
-# LAN Clipboard File Sync
+# Yank - LAN Clipboard Sync
 
-Cross-platform clipboard **file** synchronization between Windows and Mac over LAN.
+Cross-platform clipboard synchronization between Windows and macOS over LAN.
 
-Copy files on one machine → instantly paste on the other.
+Copy files or text on one machine → instantly paste on the other.
+
+**Features:**
+- Secure PIN pairing with AES-256-GCM encryption
+- Lazy file transfer (instant copy, download on paste)
+- Text, files, and images
+- No cloud. No internet. LAN only.
 
 ## Architecture
 
@@ -15,62 +21,61 @@ Copy files on one machine → instantly paste on the other.
 │  │   Monitor     │  │                    │  │   Monitor     │  │
 │  └───────┬───────┘  │                    │  └───────┬───────┘  │
 │          │          │                    │          │          │
-│          ▼          │                    │          ▼          │
-│  ┌───────────────┐  │    TCP Socket      │  ┌───────────────┐  │
+│          ▼          │    Encrypted TCP   │          ▼          │
+│  ┌───────────────┐  │    (AES-256-GCM)   │  ┌───────────────┐  │
 │  │   Sync Agent  │◄─┼────────────────────┼─►│   Sync Agent  │  │
 │  └───────────────┘  │    Port 9876       │  └───────────────┘  │
 │                     │                    │                     │
 └─────────────────────┘                    └─────────────────────┘
 ```
 
-## How It Works
-
-1. **Clipboard Monitor** watches for file copies (Ctrl+C / Cmd+C on files) **and screenshots/images**
-2. When files or images are detected, they're packaged with metadata + checksums
-3. **Sync Agent** sends the package to the peer over TCP (LAN only)
-4. Peer receives, verifies checksums, and injects into its clipboard
-5. You can now paste (Ctrl+V / Cmd+V) on the other machine
-
-**No cloud. No internet. LAN only.**
-
-### Supported Content
-- ✅ Files from Explorer/Finder
-- ✅ Multiple files
-- ✅ Folders (contents extracted)
-- ✅ Screenshots (PrtScn, Cmd+Shift+4, Snipping Tool)
-- ✅ Images copied from apps (browser, Photoshop, etc.)
-- ✅ Image files (.png, .jpg, .gif, .bmp, .webp)
-
----
-
 ## Quick Start
 
-### On Windows
+### 1. Install Dependencies
 
+**Windows:**
 ```powershell
-# Install dependencies
-pip install pywin32 zeroconf Pillow
-
-# Run (auto-discovers Mac on same network)
-cd clipboard-sync
-python -m windows.main
-
-# Or specify Mac's IP directly
-python -m windows.main --peer 192.168.1.50
+pip install pywin32 zeroconf Pillow cryptography
 ```
 
-### On macOS
-
+**macOS:**
 ```bash
-# Install dependencies
-pip install pyobjc zeroconf Pillow
+pip install pyobjc zeroconf Pillow cryptography
+```
 
-# Run (auto-discovers Windows on same network)
-cd clipboard-sync
-python -m macos.main
+### 2. Pair Devices (One-Time Setup)
 
-# Or specify Windows IP directly
-python -m macos.main --peer 192.168.1.100
+**On the first machine:**
+```bash
+# Windows
+.\run.ps1 pair
+
+# macOS
+./run.sh pair
+```
+This displays a 6-digit PIN.
+
+**On the second machine:**
+```bash
+# Windows
+.\run.ps1 join 192.168.1.x 123456
+
+# macOS
+./run.sh join 192.168.1.x 123456
+```
+
+### 3. Start Syncing
+
+**Windows:**
+```powershell
+.\run.ps1 start
+# or just: .\run.ps1
+```
+
+**macOS:**
+```bash
+./run.sh start
+# or just: ./run.sh
 ```
 
 ---
@@ -79,74 +84,117 @@ python -m macos.main --peer 192.168.1.100
 
 Once both sides are running:
 
-1. **Windows → Mac**: Select file(s) in Explorer → Ctrl+C → Go to Mac → Cmd+V
-2. **Mac → Windows**: Select file(s) in Finder → Cmd+C → Go to Windows → Ctrl+V
+| Action | Windows | Mac |
+|--------|---------|-----|
+| Copy files | Select in Explorer → Ctrl+C | Select in Finder → Cmd+C |
+| Copy text | Ctrl+C | Cmd+C |
+| Paste | Ctrl+V | Cmd+V |
 
-Console shows transfer status:
+### Lazy Transfer (Large Files)
+
+For files over 10MB, Yank uses lazy transfer:
+1. **Copy** → Only metadata is sent (instant, even for 100GB!)
+2. **Paste** → File downloads on-demand
+
+Console output:
 ```
-✓ Sent 3 file(s) to Mac (2.5MB)
-✓ Received from Windows: document.pdf, image.png
-  Ready to paste (Cmd+V)
+>> Announced 3 file(s) to Mac (2.5 GB)
+   Files ready for download on Mac
+
+<< Files announced from Windows:
+   - big_video.mp4 (2.5 GB)
+   Ready to paste (Cmd+V) - download will start when you paste
 ```
 
 ---
 
-## Run at Startup
-
-### Windows (using NSSM - recommended)
-
-1. Download [NSSM](https://nssm.cc/download)
-2. Run as Admin:
-   ```cmd
-   nssm install ClipboardSync
-   ```
-3. Configure:
-   - Path: `C:\Python311\python.exe`
-   - Startup dir: `C:\path\to\clipboard-sync`
-   - Arguments: `-m windows.main`
-4. Start: `nssm start ClipboardSync`
-
-### macOS (using launchd)
+## Commands
 
 ```bash
-# Edit the plist to set your paths
-nano macos/launchd.plist
+# Start syncing (default)
+./run.sh start
 
-# Install
-cp macos/launchd.plist ~/Library/LaunchAgents/com.clipboard-sync.agent.plist
-launchctl load ~/Library/LaunchAgents/com.clipboard-sync.agent.plist
+# Pair with another device
+./run.sh pair              # Show PIN
+./run.sh join <IP> <PIN>   # Connect with PIN
+
+# Manage pairing
+./run.sh unpair            # Remove pairing
+./run.sh status            # Show pairing status
+
+# Configuration
+./run.sh config            # Show current config
+./run.sh config --set sync_text false
+./run.sh config --reset
 ```
 
 ---
 
 ## Configuration
 
-Edit `config.py`:
+### User Config (`sync_config.json`)
+
+Created automatically on first run:
+
+```json
+{
+  "sync_files": true,
+  "sync_text": true,
+  "sync_images": true,
+  "max_file_size": 104857600,
+  "max_total_size": 524288000,
+  "ignored_extensions": [".tmp", ".temp", ".bak"]
+}
+```
+
+### Ignore Files (`.syncignore`)
+
+Like `.gitignore` for clipboard sync:
+
+```
+# Ignore patterns
+*.log
+*.tmp
+node_modules/
+.git/
+```
+
+### App Config (`config.py`)
 
 ```python
-PORT = 9876                    # Network port
-MAX_FILE_SIZE = 100 * 1024 * 1024   # 100MB per file
-MAX_TOTAL_SIZE = 500 * 1024 * 1024  # 500MB total transfer
-POLL_INTERVAL = 0.3            # Clipboard check frequency
+PORT = 9876                        # Network port
+MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB per file
+POLL_INTERVAL = 0.3                # Clipboard check frequency
+USE_AUTO_DISCOVERY = True          # mDNS peer discovery
+```
 
-# Manual peer (disable auto-discovery)
-USE_AUTO_DISCOVERY = False
-PEER_IP = "192.168.1.100"
+---
+
+## Security
+
+- **PIN Pairing**: 6-digit PIN verification prevents unauthorized connections
+- **AES-256-GCM**: All transfers encrypted with a derived key
+- **Challenge-Response**: Mutual authentication on each connection
+- **LAN Only**: No internet exposure by design
+
+To disable security (not recommended):
+```bash
+./run.sh start --no-security
 ```
 
 ---
 
 ## Firewall
 
-Allow port **9876** TCP on both machines:
+Allow port **9876** TCP:
 
-**Windows:**
+**Windows (PowerShell as Admin):**
 ```powershell
-netsh advfirewall firewall add rule name="ClipboardSync" dir=in action=allow protocol=tcp localport=9876
+netsh advfirewall firewall add rule name="Yank" dir=in action=allow protocol=tcp localport=9876
 ```
 
 **macOS:**
-Usually no action needed (accepts incoming by default on home networks).
+Usually no action needed on home networks.
 
 ---
 
@@ -155,19 +203,27 @@ Usually no action needed (accepts incoming by default on home networks).
 ```
 clipboard-sync/
 ├── common/
-│   ├── protocol.py      # Message serialization (binary protocol)
-│   └── discovery.py     # mDNS/Bonjour peer discovery
+│   ├── protocol.py          # Binary message protocol
+│   ├── discovery.py         # mDNS peer discovery
+│   ├── pairing.py           # PIN pairing & encryption
+│   ├── chunked_transfer.py  # Streaming large files
+│   ├── file_registry.py     # Transfer state management
+│   ├── transfer_manager.py  # Retry/resume logic
+│   ├── user_config.py       # User preferences
+│   └── syncignore.py        # File filtering
 ├── windows/
-│   ├── clipboard.py     # Win32 clipboard (CF_HDROP)
-│   ├── service.py       # Windows Service wrapper
-│   └── main.py          # Entry point
+│   ├── clipboard.py         # Win32 clipboard (CF_HDROP)
+│   └── virtual_clipboard.py # IDataObject for lazy transfer
 ├── macos/
-│   ├── clipboard.py     # NSPasteboard via PyObjC
-│   ├── launchd.plist    # LaunchAgent config
-│   └── main.py          # Entry point
-├── config.py            # Settings
-├── agent.py             # Core networking (TCP server/client)
-└── requirements.txt
+│   ├── clipboard.py         # NSPasteboard via PyObjC
+│   └── virtual_clipboard.py # Placeholder-based clipboard
+├── agent.py                 # Core sync agent
+├── main.py                  # Cross-platform entry point
+├── config.py                # App settings
+├── run.ps1                  # Windows launcher
+├── run.sh                   # macOS/Linux launcher
+├── .syncignore              # Default ignore patterns
+└── test_simulation.py       # Local test suite
 ```
 
 ---
@@ -176,34 +232,49 @@ clipboard-sync/
 
 | Issue | Solution |
 |-------|----------|
-| "No peer available" | Check both machines are on same LAN subnet |
+| "Not paired" | Run `./run.sh pair` on one machine, `join` on other |
+| "No peer available" | Check both on same LAN subnet |
 | "Connection refused" | Ensure firewall allows port 9876 |
-| Files not appearing in clipboard | Check logs in `/tmp/clipboard-sync/` or `%TEMP%\clipboard-sync\` |
-| Large files fail | Increase `MAX_TOTAL_SIZE` in config.py |
+| "Authentication failed" | Re-pair devices (`unpair` then `pair`) |
+| Large files slow | Normal - downloads on paste, not copy |
 
-Enable verbose logging:
+**Enable verbose logging:**
 ```bash
-python -m windows.main --verbose
-python -m macos.main --verbose
+./run.sh start --verbose
 ```
+
+**Check status:**
+```bash
+./run.sh status
+```
+
+---
+
+## Supported Content
+
+- Files from Explorer/Finder
+- Multiple files and folders
+- Text clipboard
+- Screenshots (PrtScn, Cmd+Shift+4)
+- Images from apps (browser, Photoshop, etc.)
+- Image files (.png, .jpg, .gif, .webp)
 
 ---
 
 ## Limitations
 
-- **LAN only** - no internet/cloud support (by design)
-- **Max ~500MB** per transfer (configurable)
-- **No encryption** by default (add `ENCRYPTION_KEY` in config for AES)
-- Folders are flattened (individual files extracted)
-- Images are converted to PNG for cross-platform compatibility
+- **LAN only** - no internet/cloud (by design)
+- **Max 500MB** per transfer (configurable)
+- Folders are flattened (files extracted)
+- Images converted to PNG for compatibility
 
 ---
 
-## Works With Parsec
+## Development
 
-This is designed to complement Parsec which handles **text** clipboard sync.
-This tool adds **file** clipboard sync that Parsec doesn't support.
+Run the local simulation test:
+```bash
+python test_simulation.py
+```
 
-Your workflow:
-- Parsec: Display streaming + keyboard/mouse + text clipboard ✓
-- This tool: File clipboard sync ✓
+This tests the transfer system without needing two machines.
