@@ -32,6 +32,11 @@ Security Commands:
   unpair            Remove current pairing
   security          Show security/pairing status
 
+Configuration:
+  config                     Show current configuration
+  config --set KEY VALUE     Set a configuration value
+  config --reset             Reset to defaults
+
 Auto-Start:
   install     Install LaunchAgent for auto-start on boot
   uninstall   Remove LaunchAgent (disable auto-start)
@@ -40,9 +45,15 @@ Other:
   help        Show this help message
 
 Examples:
-  ./macrun.sh pair                      # Display PIN for pairing
-  ./macrun.sh join 192.168.1.5 123456   # Pair with device
-  ./macrun.sh start                     # Start syncing
+  ./macrun.sh pair                          # Display PIN for pairing
+  ./macrun.sh join 192.168.1.5 123456       # Pair with device
+  ./macrun.sh start                         # Start syncing
+  ./macrun.sh config                        # View settings
+  ./macrun.sh config --set sync_text false  # Disable text sync
+
+Files:
+  Config:  sync_config.json
+  Ignore:  .syncignore
 
 EOF
 }
@@ -242,6 +253,17 @@ show_security() {
     source "$VENV_PATH/bin/activate" && python -m main status
 }
 
+# Function to show/edit configuration
+show_config() {
+    if [ "$1" = "--reset" ]; then
+        source "$VENV_PATH/bin/activate" && python -m main config --reset
+    elif [ "$1" = "--set" ] && [ -n "$2" ] && [ -n "$3" ]; then
+        source "$VENV_PATH/bin/activate" && python -m main config --set "$2" "$3"
+    else
+        source "$VENV_PATH/bin/activate" && python -m main config
+    fi
+}
+
 # Main command handling
 COMMAND="${1:-start}"
 
@@ -278,6 +300,9 @@ case "$COMMAND" in
         ;;
     security)
         show_security
+        ;;
+    config)
+        show_config "$2" "$3" "$4"
         ;;
     install)
         install_launchagent

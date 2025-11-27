@@ -29,13 +29,25 @@ class MessageType:
     """Message types for the protocol"""
     PING = 0x01
     PONG = 0x02
-    FILE_TRANSFER = 0x10
+    FILE_TRANSFER = 0x10      # Legacy: full file transfer (keep for small files)
     FILE_ACK = 0x11
+    TEXT_TRANSFER = 0x12      # Text clipboard transfer
+    TEXT_ACK = 0x13           # Text transfer acknowledgment
+
+    # Lazy transfer messages (on-demand file transfer)
+    FILE_ANNOUNCE = 0x14      # Announce files available (metadata only)
+    FILE_REQUEST = 0x15       # Request file data
+    FILE_CHUNK = 0x16         # Chunk of file data
+    FILE_CHUNK_ACK = 0x17     # Acknowledge chunk received
+    TRANSFER_COMPLETE = 0x18  # Transfer completed successfully
+    TRANSFER_CANCEL = 0x19    # Cancel ongoing transfer
+    TRANSFER_ERROR = 0x1A     # Error during transfer
+
     CLIPBOARD_CLEAR = 0x20
-    AUTH_CHALLENGE = 0x30    # Server sends challenge
-    AUTH_RESPONSE = 0x31     # Client responds to challenge
-    AUTH_SUCCESS = 0x32      # Authentication successful
-    AUTH_FAILURE = 0x33      # Authentication failed
+    AUTH_CHALLENGE = 0x30     # Server sends challenge
+    AUTH_RESPONSE = 0x31      # Client responds to challenge
+    AUTH_SUCCESS = 0x32       # Authentication successful
+    AUTH_FAILURE = 0x33       # Authentication failed
     ERROR = 0xFF
 
 
@@ -53,10 +65,53 @@ class FileInfo:
     checksum: str  # MD5 for quick verification
     is_directory: bool = False
     relative_path: str = ""  # For preserving folder structure
-    
+    file_index: int = 0  # Index in the transfer (for multi-file)
+
     def to_dict(self):
         return asdict(self)
-    
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        # Handle missing file_index for backward compatibility
+        if 'file_index' not in data:
+            data['file_index'] = 0
+        return cls(**data)
+
+
+@dataclass
+class ChunkInfo:
+    """Metadata for a file chunk"""
+    transfer_id: str
+    file_index: int  # Which file in the transfer
+    chunk_index: int  # Which chunk of the file
+    offset: int  # Byte offset in file
+    size: int  # Size of this chunk
+    checksum: str  # MD5 of this chunk
+    is_last: bool = False  # Last chunk of the file
+
+    def to_dict(self):
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        return cls(**data)
+
+
+@dataclass
+class TransferProgress:
+    """Progress information for a transfer"""
+    transfer_id: str
+    bytes_sent: int
+    bytes_total: int
+    files_completed: int
+    files_total: int
+    current_file: str
+    speed_bps: float = 0.0  # Bytes per second
+    eta_seconds: float = 0.0
+
+    def to_dict(self):
+        return asdict(self)
+
     @classmethod
     def from_dict(cls, data: dict):
         return cls(**data)
@@ -69,22 +124,31 @@ class TransferMetadata:
     total_size: int
     timestamp: float
     source_os: str  # 'windows' or 'macos'
-    
+    transfer_id: str = ""  # UUID for lazy transfer tracking
+    expires_at: float = 0.0  # Expiry timestamp (0 = no expiry)
+    chunk_size: int = 1048576  # 1MB default chunk size
+
     def to_dict(self):
         return {
             'files': [f.to_dict() for f in self.files],
             'total_size': self.total_size,
             'timestamp': self.timestamp,
-            'source_os': self.source_os
+            'source_os': self.source_os,
+            'transfer_id': self.transfer_id,
+            'expires_at': self.expires_at,
+            'chunk_size': self.chunk_size
         }
-    
+
     @classmethod
     def from_dict(cls, data: dict):
         return cls(
             files=[FileInfo.from_dict(f) for f in data['files']],
             total_size=data['total_size'],
             timestamp=data['timestamp'],
-            source_os=data['source_os']
+            source_os=data['source_os'],
+            transfer_id=data.get('transfer_id', ''),
+            expires_at=data.get('expires_at', 0.0),
+            chunk_size=data.get('chunk_size', 1048576)
         )
 
 
@@ -213,6 +277,156 @@ class MessageBuilder:
         content = struct.pack('>B', MessageType.AUTH_FAILURE) + reason_data
         return struct.pack('>I', len(content)) + content
 
+    @staticmethod
+    def build_text_transfer(text: str, key: bytes = None) -> bytes:
+        """
+        Build a text transfer message
+
+        Format:
+        - 4 bytes: total message length
+        - 1 byte: message type (TEXT_TRANSFER)
+        - 4 bytes: text length
+        - N bytes: text data (UTF-8)
+        """
+        text_data = text.encode('utf-8')
+        content = struct.pack('>BI', MessageType.TEXT_TRANSFER, len(text_data))
+        content += text_data
+
+        message = struct.pack('>I', len(content)) + content
+
+        if key:
+            return MessageBuilder._encrypt_message(message, key)
+        return message
+
+    @staticmethod
+    def build_text_ack(success: bool, message: str = "", key: bytes = None) -> bytes:
+        """Build a text acknowledgment message"""
+        ack_data = json.dumps({'success': success, 'message': message}).encode('utf-8')
+        content = struct.pack('>B', MessageType.TEXT_ACK) + ack_data
+        msg = struct.pack('>I', len(content)) + content
+
+        if key:
+            return MessageBuilder._encrypt_message(msg, key)
+        return msg
+
+    # ========== Lazy Transfer Messages ==========
+
+    @staticmethod
+    def build_file_announce(metadata: TransferMetadata, key: bytes = None) -> bytes:
+        """
+        Build a file announcement message (metadata only, no file data)
+
+        Format:
+        - 4 bytes: total message length
+        - 1 byte: message type (FILE_ANNOUNCE)
+        - N bytes: metadata JSON
+        """
+        metadata_json = json.dumps(metadata.to_dict()).encode('utf-8')
+        content = struct.pack('>B', MessageType.FILE_ANNOUNCE) + metadata_json
+        message = struct.pack('>I', len(content)) + content
+
+        if key:
+            return MessageBuilder._encrypt_message(message, key)
+        return message
+
+    @staticmethod
+    def build_file_request(transfer_id: str, file_index: int, offset: int = 0, key: bytes = None) -> bytes:
+        """
+        Build a file request message
+
+        Format:
+        - 4 bytes: total message length
+        - 1 byte: message type (FILE_REQUEST)
+        - N bytes: request JSON (transfer_id, file_index, offset)
+        """
+        request_data = json.dumps({
+            'transfer_id': transfer_id,
+            'file_index': file_index,
+            'offset': offset  # For resume support
+        }).encode('utf-8')
+        content = struct.pack('>B', MessageType.FILE_REQUEST) + request_data
+        message = struct.pack('>I', len(content)) + content
+
+        if key:
+            return MessageBuilder._encrypt_message(message, key)
+        return message
+
+    @staticmethod
+    def build_file_chunk(chunk_info: 'ChunkInfo', data: bytes, key: bytes = None) -> bytes:
+        """
+        Build a file chunk message
+
+        Format:
+        - 4 bytes: total message length
+        - 1 byte: message type (FILE_CHUNK)
+        - 4 bytes: chunk info JSON length
+        - N bytes: chunk info JSON
+        - M bytes: chunk data
+        """
+        chunk_json = json.dumps(chunk_info.to_dict()).encode('utf-8')
+        content = struct.pack('>BI', MessageType.FILE_CHUNK, len(chunk_json))
+        content += chunk_json
+        content += data
+        message = struct.pack('>I', len(content)) + content
+
+        if key:
+            return MessageBuilder._encrypt_message(message, key)
+        return message
+
+    @staticmethod
+    def build_file_chunk_ack(transfer_id: str, file_index: int, chunk_index: int, key: bytes = None) -> bytes:
+        """Build a chunk acknowledgment message"""
+        ack_data = json.dumps({
+            'transfer_id': transfer_id,
+            'file_index': file_index,
+            'chunk_index': chunk_index
+        }).encode('utf-8')
+        content = struct.pack('>B', MessageType.FILE_CHUNK_ACK) + ack_data
+        message = struct.pack('>I', len(content)) + content
+
+        if key:
+            return MessageBuilder._encrypt_message(message, key)
+        return message
+
+    @staticmethod
+    def build_transfer_complete(transfer_id: str, key: bytes = None) -> bytes:
+        """Build a transfer complete message"""
+        data = json.dumps({'transfer_id': transfer_id}).encode('utf-8')
+        content = struct.pack('>B', MessageType.TRANSFER_COMPLETE) + data
+        message = struct.pack('>I', len(content)) + content
+
+        if key:
+            return MessageBuilder._encrypt_message(message, key)
+        return message
+
+    @staticmethod
+    def build_transfer_cancel(transfer_id: str, reason: str = "", key: bytes = None) -> bytes:
+        """Build a transfer cancel message"""
+        data = json.dumps({
+            'transfer_id': transfer_id,
+            'reason': reason
+        }).encode('utf-8')
+        content = struct.pack('>B', MessageType.TRANSFER_CANCEL) + data
+        message = struct.pack('>I', len(content)) + content
+
+        if key:
+            return MessageBuilder._encrypt_message(message, key)
+        return message
+
+    @staticmethod
+    def build_transfer_error(transfer_id: str, error: str, key: bytes = None) -> bytes:
+        """Build a transfer error message"""
+        data = json.dumps({
+            'transfer_id': transfer_id,
+            'error': error
+        }).encode('utf-8')
+        content = struct.pack('>B', MessageType.TRANSFER_ERROR) + data
+        message = struct.pack('>I', len(content)) + content
+
+        if key:
+            return MessageBuilder._encrypt_message(message, key)
+        return message
+
 
 class MessageParser:
     """Parse protocol messages"""
@@ -313,6 +527,75 @@ class MessageParser:
     def parse_error(payload: bytes) -> str:
         """Parse an error payload"""
         return payload.decode('utf-8')
+
+    @staticmethod
+    def parse_text_transfer(payload: bytes) -> str:
+        """
+        Parse a text transfer payload
+
+        Returns: The text string
+        """
+        # First 4 bytes are text length
+        text_len = struct.unpack('>I', payload[:4])[0]
+        text_data = payload[4:4 + text_len]
+        return text_data.decode('utf-8')
+
+    @staticmethod
+    def parse_text_ack(payload: bytes) -> dict:
+        """Parse a text acknowledgment payload"""
+        return json.loads(payload.decode('utf-8'))
+
+    # ========== Lazy Transfer Parsers ==========
+
+    @staticmethod
+    def parse_file_announce(payload: bytes) -> TransferMetadata:
+        """Parse a file announcement payload"""
+        metadata_dict = json.loads(payload.decode('utf-8'))
+        return TransferMetadata.from_dict(metadata_dict)
+
+    @staticmethod
+    def parse_file_request(payload: bytes) -> dict:
+        """Parse a file request payload"""
+        return json.loads(payload.decode('utf-8'))
+
+    @staticmethod
+    def parse_file_chunk(payload: bytes) -> tuple:
+        """
+        Parse a file chunk payload
+
+        Returns: (ChunkInfo, chunk_data)
+        """
+        # First 4 bytes are chunk info JSON length
+        chunk_info_len = struct.unpack('>I', payload[:4])[0]
+
+        # Extract chunk info JSON
+        chunk_json = payload[4:4 + chunk_info_len].decode('utf-8')
+        chunk_info = ChunkInfo.from_dict(json.loads(chunk_json))
+
+        # Rest is chunk data
+        chunk_data = payload[4 + chunk_info_len:]
+
+        return (chunk_info, chunk_data)
+
+    @staticmethod
+    def parse_file_chunk_ack(payload: bytes) -> dict:
+        """Parse a chunk acknowledgment payload"""
+        return json.loads(payload.decode('utf-8'))
+
+    @staticmethod
+    def parse_transfer_complete(payload: bytes) -> dict:
+        """Parse a transfer complete payload"""
+        return json.loads(payload.decode('utf-8'))
+
+    @staticmethod
+    def parse_transfer_cancel(payload: bytes) -> dict:
+        """Parse a transfer cancel payload"""
+        return json.loads(payload.decode('utf-8'))
+
+    @staticmethod
+    def parse_transfer_error(payload: bytes) -> dict:
+        """Parse a transfer error payload"""
+        return json.loads(payload.decode('utf-8'))
 
 
 def pack_files(file_paths: List[Path], base_path: Optional[Path] = None) -> tuple:

@@ -24,9 +24,9 @@ try:
     from AppKit import (
         NSPasteboard, NSPasteboardTypeFileURL, NSURL, NSFilenamesPboardType,
         NSPasteboardTypePNG, NSPasteboardTypeTIFF, NSImage, NSBitmapImageRep,
-        NSPNGFileType
+        NSPNGFileType, NSPasteboardTypeString
     )
-    from Foundation import NSArray, NSData
+    from Foundation import NSArray, NSData, NSString
     HAS_APPKIT = True
 except ImportError:
     HAS_APPKIT = False
@@ -45,45 +45,63 @@ logger = logging.getLogger(__name__)
 
 class MacClipboardMonitor:
     """
-    Monitor macOS pasteboard for file copies and images
-    
+    Monitor macOS pasteboard for file copies, images, and text
+
     Supports:
     - Files (NSFilenamesPboardType) - from Finder
     - Images (NSPasteboardTypePNG, TIFF) - screenshots, copied images
-    
+    - Text (NSPasteboardTypeString) - copied text
+
     Uses polling to check the pasteboard change count.
     """
-    
+
     def __init__(self,
                  on_files_copied: Optional[Callable[[List[Path]], None]] = None,
+                 on_text_copied: Optional[Callable[[str], None]] = None,
                  poll_interval: float = 0.3,
-                 temp_dir: Path = None):
+                 temp_dir: Path = None,
+                 sync_text: bool = True,
+                 sync_files: bool = True,
+                 sync_images: bool = True):
         """
         Initialize clipboard monitor
-        
+
         Args:
             on_files_copied: Callback when files/images are copied to clipboard
+            on_text_copied: Callback when text is copied to clipboard
             poll_interval: Seconds between clipboard checks
             temp_dir: Directory to save temporary image files
+            sync_text: Whether to sync text clipboard
+            sync_files: Whether to sync files
+            sync_images: Whether to sync images
         """
         if not HAS_APPKIT:
             raise RuntimeError("pyobjc is required for macOS clipboard monitoring")
-        
+
         self.on_files_copied = on_files_copied
+        self.on_text_copied = on_text_copied
         self.poll_interval = poll_interval
         self.temp_dir = temp_dir or Path(tempfile.gettempdir()) / 'clipboard-sync'
         self.temp_dir.mkdir(parents=True, exist_ok=True)
-        
+
+        # Feature toggles
+        self.sync_text = sync_text
+        self.sync_files = sync_files
+        self.sync_images = sync_images
+
         self._running = False
         self._monitor_thread: Optional[threading.Thread] = None
         self._last_change_count: int = 0
         self._last_content_hash: Optional[str] = None
+        self._last_text_hash: Optional[str] = None
         self._lock = threading.Lock()
-        
-        # Track files we've received to avoid loops
+
+        # Track files/text we've received to avoid loops
         self._received_files: set = set()
         self._received_files_lock = threading.Lock()
-        
+        self._received_text_hash: Optional[str] = None
+        self._received_text_lock = threading.Lock()
+
         # Get pasteboard reference
         self._pasteboard = NSPasteboard.generalPasteboard()
     
@@ -118,23 +136,25 @@ class MacClipboardMonitor:
             time.sleep(self.poll_interval)
     
     def _check_clipboard(self):
-        """Check clipboard for file or image changes"""
+        """Check clipboard for file, image, or text changes"""
         # Check if clipboard changed
         current_count = self._pasteboard.changeCount()
-        
+
         if current_count == self._last_change_count:
             return
-        
+
         self._last_change_count = current_count
-        
+
         # Get available types
         types = self._pasteboard.types()
-        
-        # Priority: Files first, then images
-        if NSFilenamesPboardType in types:
+
+        # Priority: Files first, then images, then text
+        if self.sync_files and NSFilenamesPboardType in types:
             self._handle_files()
-        elif NSPasteboardTypePNG in types or NSPasteboardTypeTIFF in types:
+        elif self.sync_images and (NSPasteboardTypePNG in types or NSPasteboardTypeTIFF in types):
             self._handle_image()
+        elif self.sync_text and NSPasteboardTypeString in types:
+            self._handle_text()
     
     def _handle_files(self):
         """Handle file clipboard data"""
@@ -265,12 +285,67 @@ class MacClipboardMonitor:
             logger.debug(f"Error parsing URL {url_string}: {e}")
         return None
     
+    def _handle_text(self):
+        """Handle text clipboard data"""
+        try:
+            text = self._pasteboard.stringForType_(NSPasteboardTypeString)
+        except:
+            return
+
+        if not text or not text.strip():
+            return
+
+        # Create hash to detect changes
+        text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
+
+        with self._lock:
+            if text_hash == self._last_text_hash:
+                return
+            self._last_text_hash = text_hash
+
+        # Check if this is text we just received (avoid loops)
+        with self._received_text_lock:
+            if text_hash == self._received_text_hash:
+                logger.debug("Skipping received text to avoid loop")
+                return
+
+        logger.info(f"Detected text in clipboard ({len(text)} chars)")
+
+        if self.on_text_copied:
+            self.on_text_copied(text)
+
     def _hash_file_list(self, file_paths: List[Path]) -> str:
         """Create a hash of file list for change detection"""
-        import hashlib
         content = '|'.join(sorted(str(p) for p in file_paths))
         return hashlib.md5(content.encode()).hexdigest()
-    
+
+    def set_clipboard_text(self, text: str):
+        """
+        Set text in the clipboard
+
+        Args:
+            text: Text to put in clipboard
+        """
+        if not text:
+            return
+
+        # Track this text to avoid loops
+        text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
+        with self._received_text_lock:
+            self._received_text_hash = text_hash
+
+        # Update our hash to avoid re-sending
+        with self._lock:
+            self._last_text_hash = text_hash
+
+        try:
+            self._pasteboard.clearContents()
+            self._pasteboard.setString_forType_(text, NSPasteboardTypeString)
+            self._last_change_count = self._pasteboard.changeCount()
+            logger.info(f"Set text in clipboard ({len(text)} chars)")
+        except Exception as e:
+            logger.error(f"Failed to set clipboard text: {e}")
+
     def set_clipboard_files(self, file_paths: List[Path]):
         """
         Set files in the clipboard (for pasting)
@@ -388,6 +463,56 @@ class MacClipboardMonitor:
         """Clear the received files tracking set"""
         with self._received_files_lock:
             self._received_files.clear()
+
+    def set_virtual_clipboard_files(
+        self,
+        files: List[dict],
+        transfer_id: str,
+        download_callback: Callable[[str, int], Optional[bytes]]
+    ) -> bool:
+        """
+        Set virtual files on the clipboard for on-demand download.
+
+        On macOS, this uses a placeholder approach since NSFilePromiseProvider
+        doesn't work with Finder copy/paste (only drag-drop).
+
+        Args:
+            files: List of file info dicts with 'name', 'size', 'checksum', 'file_index'
+            transfer_id: The transfer ID for downloading
+            download_callback: Function to call when file content is needed
+
+        Returns:
+            True if successful
+        """
+        try:
+            from macos.virtual_clipboard import set_virtual_clipboard
+
+            # Track files to avoid loops
+            with self._received_files_lock:
+                for f in files:
+                    # Mark the staging path as received
+                    staging_path = Path.home() / ".clipboard-sync" / "staging" / transfer_id[:8] / f['name']
+                    self._received_files.add(str(staging_path).lower())
+
+            # Update hash to avoid re-sending
+            with self._lock:
+                file_names = '|'.join(sorted(f['name'] for f in files))
+                self._last_content_hash = hashlib.md5(file_names.encode()).hexdigest()
+
+            result = set_virtual_clipboard(files, transfer_id, download_callback)
+
+            if result:
+                # Update change count after setting clipboard
+                self._last_change_count = self._pasteboard.changeCount()
+
+            return result
+
+        except ImportError:
+            logger.error("Virtual clipboard module not available")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to set virtual clipboard: {e}")
+            return False
 
 
 def get_clipboard_files() -> List[Path]:

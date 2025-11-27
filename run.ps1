@@ -20,7 +20,7 @@
 
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("start", "stop", "restart", "attach", "logs", "tail", "status", "pair", "join", "unpair", "security", "help")]
+    [ValidateSet("start", "stop", "restart", "attach", "logs", "tail", "status", "pair", "join", "unpair", "security", "config", "help")]
     [string]$Command = "start",
 
     [Parameter(Position = 1)]
@@ -120,18 +120,25 @@ function Show-Help {
     Write-Host "  unpair           - Remove current pairing"
     Write-Host "  security         - Show security/pairing status"
     Write-Host ""
+    Write-Host "Configuration:" -ForegroundColor Yellow
+    Write-Host "  config                    - Show current configuration"
+    Write-Host "  config --set KEY VALUE    - Set a configuration value"
+    Write-Host "  config --reset            - Reset to defaults"
+    Write-Host ""
     Write-Host "Other:" -ForegroundColor Yellow
     Write-Host "  help     - Display this help message"
     Write-Host ""
     Write-Host "Examples:" -ForegroundColor Yellow
-    Write-Host "  .\run.ps1 pair                      # Display PIN for pairing"
-    Write-Host "  .\run.ps1 join 192.168.1.5 123456   # Pair with device"
-    Write-Host "  .\run.ps1 start                     # Start syncing"
+    Write-Host "  .\run.ps1 pair                          # Display PIN for pairing"
+    Write-Host "  .\run.ps1 join 192.168.1.5 123456       # Pair with device"
+    Write-Host "  .\run.ps1 start                         # Start syncing"
+    Write-Host "  .\run.ps1 config                        # View settings"
+    Write-Host "  .\run.ps1 config --set sync_text false  # Disable text sync"
     Write-Host ""
-    Write-Host "Configuration:" -ForegroundColor Gray
-    Write-Host "  Session Name: $SessionName"
-    Write-Host "  Virtual Env:  $VenvPath"
-    Write-Host "  Log File:     $LogFile"
+    Write-Host "Files:" -ForegroundColor Gray
+    Write-Host "  Config:     sync_config.json"
+    Write-Host "  Ignore:     .syncignore"
+    Write-Host "  Log File:   $LogFile"
     Write-Host ""
 }
 
@@ -443,6 +450,42 @@ python -m main status
     powershell -NoProfile -ExecutionPolicy Bypass -Command $statusScript
 }
 
+function Show-Config {
+    param($SetKey, $SetValue)
+
+    # Verify virtual environment exists
+    $activateScript = Join-Path $VenvPath "Scripts\Activate.ps1"
+    if (-not (Test-Path $activateScript)) {
+        Write-Error "Virtual environment not found at: $VenvPath"
+        return
+    }
+
+    # Build command based on arguments
+    if ($SetKey -eq "--reset") {
+        $configCmd = "python -m main config --reset"
+    }
+    elseif ($SetKey -eq "--set" -and $SetValue) {
+        # Need to get the actual key and value from Arg2 (which would be the key)
+        # This is a bit awkward with positional params
+        $configCmd = "python -m main config --set $SetValue $Arg2"
+    }
+    elseif ($SetKey -and $SetKey -ne "--set" -and $SetKey -ne "--reset") {
+        # Assume it's --set KEY VALUE format
+        $configCmd = "python -m main config --set $SetKey $SetValue"
+    }
+    else {
+        $configCmd = "python -m main config"
+    }
+
+    $configScript = @"
+Set-Location '$ScriptRoot'
+& '$activateScript'
+$configCmd
+"@
+
+    powershell -NoProfile -ExecutionPolicy Bypass -Command $configScript
+}
+
 # Main execution
 switch ($Command) {
     "start"    { Start-Application }
@@ -456,6 +499,7 @@ switch ($Command) {
     "join"     { Join-Device -Host $Arg1 -Pin $Arg2 }
     "unpair"   { Remove-Pairing }
     "security" { Show-Security }
+    "config"   { Show-Config -SetKey $Arg1 -SetValue $Arg2 }
     "help"     { Show-Help }
     default    { Start-Application }
 }

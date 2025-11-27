@@ -1,0 +1,64 @@
+# Clipboard Sync Ignore File
+# Add patterns here to exclude files from syncing
+# Uses gitignore-style patterns
+
+# System files
+.DS_Store
+Thumbs.db
+desktop.ini
+*.lnk
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+~$*
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+*.o
+*.obj
+*.class
+*.pyc
+*.pyo
+__pycache__/
+
+# IDE/Editor files
+.idea/
+.vscode/
+*.sublime-*
+.project
+.settings/
+
+# Version control
+.git/
+.svn/
+.hg/
+
+# Node modules (too large)
+node_modules/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Large media (uncomment if needed)
+# *.mp4
+# *.mov
+# *.avi
+# *.mkv
+
+# Archives
+# *.zip
+# *.tar
+# *.gz
+# *.rar
+# *.7z

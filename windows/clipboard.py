@@ -51,46 +51,64 @@ CF_PNG = None  # Will be registered dynamically
 
 class WindowsClipboardMonitor:
     """
-    Monitor Windows clipboard for file copies and images
-    
+    Monitor Windows clipboard for file copies, images, and text
+
     Supports:
     - Files (CF_HDROP) - from Explorer
     - Images (CF_DIB, CF_DIBV5, PNG) - screenshots, copied images
-    
+    - Text (CF_UNICODETEXT) - copied text
+
     Uses polling (checking clipboard periodically) rather than
     clipboard viewer chain, which is more reliable and simpler.
     """
-    
-    def __init__(self, 
+
+    def __init__(self,
                  on_files_copied: Optional[Callable[[List[Path]], None]] = None,
+                 on_text_copied: Optional[Callable[[str], None]] = None,
                  poll_interval: float = 0.3,
-                 temp_dir: Path = None):
+                 temp_dir: Path = None,
+                 sync_text: bool = True,
+                 sync_files: bool = True,
+                 sync_images: bool = True):
         """
         Initialize clipboard monitor
-        
+
         Args:
             on_files_copied: Callback when files/images are copied to clipboard
+            on_text_copied: Callback when text is copied to clipboard
             poll_interval: Seconds between clipboard checks
             temp_dir: Directory to save temporary image files
+            sync_text: Whether to sync text clipboard
+            sync_files: Whether to sync files
+            sync_images: Whether to sync images
         """
         if not HAS_WIN32:
             raise RuntimeError("pywin32 is required for Windows clipboard monitoring")
-        
+
         self.on_files_copied = on_files_copied
+        self.on_text_copied = on_text_copied
         self.poll_interval = poll_interval
         self.temp_dir = temp_dir or Path(tempfile.gettempdir()) / 'clipboard-sync'
         self.temp_dir.mkdir(parents=True, exist_ok=True)
-        
+
+        # Feature toggles
+        self.sync_text = sync_text
+        self.sync_files = sync_files
+        self.sync_images = sync_images
+
         self._running = False
         self._monitor_thread: Optional[threading.Thread] = None
         self._last_clipboard_hash: Optional[str] = None
+        self._last_text_hash: Optional[str] = None
         self._last_change_count: int = 0
         self._lock = threading.Lock()
-        
-        # Track files we've received to avoid loops
+
+        # Track files/text we've received to avoid loops
         self._received_files: set = set()
         self._received_files_lock = threading.Lock()
-        
+        self._received_text_hash: Optional[str] = None
+        self._received_text_lock = threading.Lock()
+
         # Register PNG clipboard format
         global CF_PNG
         try:
@@ -134,25 +152,25 @@ class WindowsClipboardMonitor:
             pythoncom.CoUninitialize()
     
     def _check_clipboard(self):
-        """Check clipboard for file or image changes"""
+        """Check clipboard for file, image, or text changes"""
         try:
             win32clipboard.OpenClipboard()
-            
+
             try:
-                # Check sequence number to detect any change
-                seq = win32clipboard.GetClipboardSequenceNumber() if hasattr(win32clipboard, 'GetClipboardSequenceNumber') else 0
-                
-                # Priority: Files first, then images
-                if win32clipboard.IsClipboardFormatAvailable(CF_HDROP):
+                # Priority: Files first, then images, then text
+                if self.sync_files and win32clipboard.IsClipboardFormatAvailable(CF_HDROP):
                     self._handle_files()
-                elif HAS_PIL and (win32clipboard.IsClipboardFormatAvailable(CF_DIB) or 
-                                  win32clipboard.IsClipboardFormatAvailable(CF_DIBV5) or
-                                  (CF_PNG and win32clipboard.IsClipboardFormatAvailable(CF_PNG))):
+                elif self.sync_images and HAS_PIL and (
+                        win32clipboard.IsClipboardFormatAvailable(CF_DIB) or
+                        win32clipboard.IsClipboardFormatAvailable(CF_DIBV5) or
+                        (CF_PNG and win32clipboard.IsClipboardFormatAvailable(CF_PNG))):
                     self._handle_image()
-                
+                elif self.sync_text and win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
+                    self._handle_text()
+
             finally:
                 win32clipboard.CloseClipboard()
-                
+
         except Exception as e:
             # Clipboard might be locked by another app
             logger.debug(f"Could not access clipboard: {e}")
@@ -314,12 +332,70 @@ class WindowsClipboardMonitor:
             logger.error(f"DIB conversion error: {e}")
             return None
     
+    def _handle_text(self):
+        """Handle text clipboard data"""
+        try:
+            text = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
+        except:
+            return
+
+        if not text or not text.strip():
+            return
+
+        # Create hash to detect changes
+        text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
+
+        with self._lock:
+            if text_hash == self._last_text_hash:
+                return
+            self._last_text_hash = text_hash
+
+        # Check if this is text we just received (avoid loops)
+        with self._received_text_lock:
+            if text_hash == self._received_text_hash:
+                logger.debug("Skipping received text to avoid loop")
+                return
+
+        logger.info(f"Detected text in clipboard ({len(text)} chars)")
+
+        if self.on_text_copied:
+            self.on_text_copied(text)
+
     def _hash_file_list(self, file_paths: List[Path]) -> str:
         """Create a hash of file list for change detection"""
-        import hashlib
         content = '|'.join(sorted(str(p) for p in file_paths))
         return hashlib.md5(content.encode()).hexdigest()
-    
+
+    def set_clipboard_text(self, text: str):
+        """
+        Set text in the clipboard
+
+        Args:
+            text: Text to put in clipboard
+        """
+        if not text:
+            return
+
+        # Track this text to avoid loops
+        text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
+        with self._received_text_lock:
+            self._received_text_hash = text_hash
+
+        # Update our hash to avoid re-sending
+        with self._lock:
+            self._last_text_hash = text_hash
+
+        try:
+            win32clipboard.OpenClipboard()
+            try:
+                win32clipboard.EmptyClipboard()
+                win32clipboard.SetClipboardText(text, win32con.CF_UNICODETEXT)
+                logger.info(f"Set text in clipboard ({len(text)} chars)")
+            finally:
+                win32clipboard.CloseClipboard()
+        except Exception as e:
+            logger.error(f"Failed to set clipboard text: {e}")
+
     def set_clipboard_files(self, file_paths: List[Path]):
         """
         Set files in the clipboard (for pasting)
@@ -455,6 +531,47 @@ class WindowsClipboardMonitor:
         """Clear the received files tracking set"""
         with self._received_files_lock:
             self._received_files.clear()
+
+    def set_virtual_clipboard_files(
+        self,
+        files: List[dict],
+        transfer_id: str,
+        download_callback
+    ) -> bool:
+        """
+        Set virtual files on clipboard (true on-demand transfer).
+
+        When user pastes, the download_callback will be called to get file data.
+
+        Args:
+            files: List of file info dicts with 'name', 'size', 'checksum', 'file_index'
+            transfer_id: Transfer ID for the download
+            download_callback: Callable[[str, int], Optional[bytes]] to get file data
+
+        Returns:
+            True if successful
+        """
+        try:
+            from windows.virtual_clipboard import set_virtual_clipboard
+
+            # Track to avoid loops
+            with self._received_files_lock:
+                for f in files:
+                    self._received_files.add(f['name'].lower())
+
+            success = set_virtual_clipboard(files, transfer_id, download_callback)
+
+            if success:
+                logger.info(f"Set {len(files)} virtual file(s) on clipboard")
+
+            return success
+
+        except ImportError as e:
+            logger.warning(f"Virtual clipboard not available: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to set virtual clipboard: {e}")
+            return False
 
 
 def get_clipboard_files() -> List[Path]:

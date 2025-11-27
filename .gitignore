@@ -48,8 +48,10 @@ desktop.ini
 
 # Application data
 data/
-*.json
-!config.json.example
+pairing_data.json
+
+# User config (users may customize)
+sync_config.json
 
 # Temp files
 temp/
