@@ -269,6 +269,10 @@ class SyncAgent:
 
             if payload != expected:
                 logger.warning(f"Auth failed from {addr} - invalid response")
+                logger.debug(f"Challenge: {challenge.hex()[:16]}...")
+                logger.debug(f"Key hash: {hashlib.sha256(key).hexdigest()[:16]}")
+                logger.debug(f"Expected: {expected.hex()[:16]}...")
+                logger.debug(f"Got:      {payload.hex()[:16]}... (len={len(payload)})")
                 client_socket.sendall(MessageBuilder.build_auth_failure("Authentication failed"))
                 return False
 
@@ -631,6 +635,9 @@ class SyncAgent:
 
             # Compute response: SHA256(challenge + key)
             response = hashlib.sha256(payload + key).digest()
+            logger.debug(f"Auth - Challenge: {payload.hex()[:16]}...")
+            logger.debug(f"Auth - Key hash: {hashlib.sha256(key).hexdigest()[:16]}")
+            logger.debug(f"Auth - Response: {response.hex()[:16]}...")
 
             # Send response
             sock.sendall(MessageBuilder.build_auth_response(response))

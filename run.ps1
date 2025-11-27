@@ -415,9 +415,9 @@ python -m main pair
 }
 
 function Join-Device {
-    param($Host, $Pin)
+    param($PeerHost, $Pin)
 
-    if (-not $Host) {
+    if (-not $PeerHost) {
         Write-Error "Host IP is required. Usage: .\run.ps1 join <IP> <PIN>"
         return
     }
@@ -434,13 +434,13 @@ function Join-Device {
         return
     }
 
-    Write-Info "Connecting to $Host..."
+    Write-Info "Connecting to $PeerHost..."
 
     # Run join in foreground (interactive)
     $joinScript = @"
 Set-Location '$ScriptRoot'
 & '$activateScript'
-python -m main join $Host $Pin
+python -m main join $PeerHost $Pin
 "@
 
     powershell -NoProfile -ExecutionPolicy Bypass -Command $joinScript
@@ -528,7 +528,7 @@ switch ($Command) {
     "tail"     { Show-Tail }
     "status"   { Show-Status }
     "pair"     { Start-Pairing }
-    "join"     { Join-Device -Host $Arg1 -Pin $Arg2 }
+    "join"     { Join-Device -PeerHost $Arg1 -Pin $Arg2 }
     "unpair"   { Remove-Pairing }
     "security" { Show-Security }
     "config"   { Show-Config -SetKey $Arg1 -SetValue $Arg2 }
