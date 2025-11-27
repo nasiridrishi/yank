@@ -354,13 +354,17 @@ class ClipboardSync:
         """
         Try to set virtual files on clipboard.
 
-        Windows: Uses IDataObject with CFSTR_FILEDESCRIPTOR/CFSTR_FILECONTENTS
-                 for true on-demand download when paste occurs.
+        Windows: Virtual clipboard with IDataObject is complex and unreliable.
+                 Disabled for now - use auto-download instead.
         macOS: Uses placeholder files that download in background since
                NSFilePromiseProvider doesn't work with Finder copy/paste.
 
         Returns True if successful, False to fall back to auto-download.
         """
+        # Windows virtual clipboard is unreliable - always auto-download
+        if PLATFORM == "Windows":
+            return False
+
         try:
             # Prepare file info for virtual clipboard
             files = [
