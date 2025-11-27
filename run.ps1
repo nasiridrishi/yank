@@ -80,18 +80,19 @@ function Get-ProcessId {
 }
 
 function Test-ProcessRunning {
+    # First check if port 9876 is in use (most reliable)
+    $portInUse = netstat -ano | Select-String ":9876.*LISTENING"
+    if ($portInUse) {
+        return $true
+    }
+
+    # Fallback to PID file
     $processId = Get-ProcessId
     if ($processId) {
         $proc = Get-Process -Id $processId -ErrorAction SilentlyContinue
         if ($proc -and -not $proc.HasExited) {
             return $true
         }
-    }
-
-    # Also check by window title as fallback
-    $procs = Get-Process | Where-Object { $_.MainWindowTitle -like "*$SessionName*" }
-    if ($procs) {
-        return $true
     }
 
     return $false
@@ -236,42 +237,53 @@ python -m main start$extraArgs 2>&1 | Tee-Object -FilePath '$LogFile' -Append
 }
 
 function Stop-Application {
-    $processId = Get-ProcessId
+    # Check if port 9876 is in use
+    $portInfo = netstat -ano | Select-String ":9876.*LISTENING"
 
-    if (-not $processId) {
-        Write-Warn "No PID file found. Application may not be running."
-
-        # Try to find by name anyway
-        $pythonProcs = Get-Process -Name "python" -ErrorAction SilentlyContinue
-        if ($pythonProcs) {
-            Write-Info "Found Python processes. Checking if any are clipboard-sync..."
+    if (-not $portInfo) {
+        Write-Warn "Application is not running (port 9876 is free)."
+        # Clean up stale PID file if exists
+        if (Test-Path $PidFile) {
+            Remove-Item $PidFile -Force
         }
         return
     }
 
-    $proc = Get-Process -Id $processId -ErrorAction SilentlyContinue
+    # Extract PID from netstat output
+    $runningPid = $null
+    if ($portInfo -match '\s+(\d+)\s*$') {
+        $runningPid = [int]$Matches[1]
+    }
 
-    if ($proc) {
-        Write-Info "Stopping $SessionName (PID: $processId)..."
+    if ($runningPid) {
+        Write-Info "Stopping $SessionName (PID: $runningPid)..."
 
         try {
-            # Try graceful stop first
-            $proc.CloseMainWindow() | Out-Null
-            $proc.WaitForExit(5000) | Out-Null
+            $proc = Get-Process -Id $runningPid -ErrorAction SilentlyContinue
+            if ($proc) {
+                # Try graceful stop first
+                $proc.CloseMainWindow() | Out-Null
+                Start-Sleep -Milliseconds 500
 
-            if (-not $proc.HasExited) {
-                Write-Warn "Graceful shutdown timed out, forcing stop..."
-                $proc.Kill()
+                if (-not $proc.HasExited) {
+                    # Force kill
+                    Stop-Process -Id $runningPid -Force -ErrorAction SilentlyContinue
+                }
+
+                # Wait a moment and verify
+                Start-Sleep -Seconds 1
+                $stillRunning = netstat -ano | Select-String ":9876.*LISTENING"
+
+                if (-not $stillRunning) {
+                    Write-Success "Application stopped."
+                } else {
+                    Write-Warn "Process may still be running. Try running as administrator."
+                }
             }
-
-            Write-Success "Application stopped."
         }
         catch {
             Write-Error "Error stopping process: $_"
         }
-    }
-    else {
-        Write-Warn "Process with PID $processId is not running."
     }
 
     # Clean up PID file
