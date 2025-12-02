@@ -268,12 +268,3 @@ sudo iptables -A INPUT -p tcp --dport 9876 -j ACCEPT
 - Images from apps (browser, Photoshop, etc.)
 - Image files (.png, .jpg, .gif, .webp)
 
----
-
-## Limitations
-
-- **LAN only** - no internet/cloud (by design)
-- **Max 500MB** per transfer (configurable)
-- Folders are flattened (files extracted)
-- Images converted to PNG for compatibility
-
