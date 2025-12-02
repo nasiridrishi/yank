@@ -710,6 +710,52 @@ class DrawerWindow(QWidget):
         if not self.isVisible():
             self.show_drawer()
 
+    def add_received_files(self, transfer_id: str, file_paths: list):
+        """Add received files (already downloaded) to the list."""
+        logger.info(f"Adding received files to drawer: {transfer_id}")
+
+        # Create a fake metadata-like structure for the widget
+        from yank.common.protocol import FileMetadata, TransferMetadata
+
+        files = []
+        total_size = 0
+        for i, path in enumerate(file_paths):
+            size = path.stat().st_size if path.exists() else 0
+            total_size += size
+            files.append(
+                FileMetadata(
+                    name=path.name, size=size, checksum="", file_index=i, relative_path=str(path)
+                )
+            )
+
+        metadata = TransferMetadata(
+            transfer_id=transfer_id,
+            files=files,
+            total_size=total_size,
+            chunk_size=1024 * 1024,
+            expires_at=0,
+        )
+
+        # Create item widget
+        item_widget = TransferItemWidget(transfer_id, metadata, self.signals)
+        item_widget.set_status("completed")  # Already downloaded
+
+        # Create list item
+        list_item = QListWidgetItem(self.list_widget)
+        list_item.setData(Qt.UserRole, transfer_id)
+        list_item.setSizeHint(QSize(self.DRAWER_WIDTH - 40, 98))
+
+        self.list_widget.insertItem(0, list_item)  # Add at top
+        self.list_widget.setItemWidget(list_item, item_widget)
+
+        self._transfers[transfer_id] = item_widget
+        self._items[transfer_id] = list_item
+        self._update_empty_state()
+
+        # Show drawer if hidden
+        if not self.isVisible():
+            self.show_drawer()
+
     def update_transfer_progress(
         self, transfer_id: str, bytes_done: int, bytes_total: int, current_file: str
     ):

@@ -166,6 +166,9 @@ class DrawerApp(QObject):
         # File announcements -> add to drawer
         self.signals.files_announced.connect(self._drawer.add_announced_files)
 
+        # Files received directly -> add to drawer as completed
+        self.signals.files_received.connect(self._drawer.add_received_files)
+
         # Transfer progress -> update progress bar
         self.signals.transfer_progress.connect(self._drawer.update_transfer_progress)
 
@@ -228,9 +231,12 @@ class DrawerApp(QObject):
     def _on_files_received(self, file_paths: list):
         """Called when files are received (small files, direct transfer)."""
         # For small files, they're already downloaded
-        # Just notify the UI
-        logger.info(f"Received {len(file_paths)} files directly")
-        # Could emit a signal here if we want to show them in drawer
+        # Show them in the drawer as completed
+        import uuid
+
+        transfer_id = str(uuid.uuid4())
+        logger.info(f"Received {len(file_paths)} files directly, showing in drawer")
+        self.signals.files_received.emit(transfer_id, file_paths)
 
     def _on_text_received(self, text: str):
         """Called when text is received."""

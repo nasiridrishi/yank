@@ -19,6 +19,10 @@ class SyncSignals(QObject):
     # Args: transfer_id (str), metadata (TransferMetadata)
     files_announced = Signal(str, object)
 
+    # Files received directly (small files, already downloaded)
+    # Args: transfer_id (str), file_paths (list)
+    files_received = Signal(str, list)
+
     # Transfer progress update
     # Args: transfer_id (str), bytes_done (int), bytes_total (int), current_file (str)
     transfer_progress = Signal(str, int, int, str)
