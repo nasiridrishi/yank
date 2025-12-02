@@ -258,54 +258,6 @@ sudo iptables -A INPUT -p tcp --dport 9876 -j ACCEPT
 
 ---
 
-## Project Structure
-
-```
-clipboard-sync/
-├── common/
-│   ├── protocol.py          # Binary message protocol
-│   ├── discovery.py         # mDNS peer discovery
-│   ├── pairing.py           # PIN pairing & encryption
-│   ├── chunked_transfer.py  # Streaming large files
-│   ├── file_registry.py     # Transfer state management
-│   ├── transfer_manager.py  # Retry/resume logic
-│   ├── user_config.py       # User preferences
-│   └── syncignore.py        # File filtering
-├── windows/
-│   ├── clipboard.py         # Win32 clipboard (CF_HDROP)
-│   └── virtual_clipboard.py # IDataObject for lazy transfer
-├── macos/
-│   ├── clipboard.py         # NSPasteboard via PyObjC
-│   └── virtual_clipboard.py # Placeholder-based clipboard
-├── linux/
-│   ├── clipboard.py         # GTK3 clipboard (X11 + Wayland)
-│   └── virtual_clipboard.py # Placeholder-based clipboard
-├── agent.py                 # Core sync agent
-├── main.py                  # Cross-platform entry point
-├── config.py                # App settings
-├── run.ps1                  # Windows launcher
-├── run.sh                   # macOS/Linux launcher
-├── .syncignore              # Default ignore patterns
-└── test_simulation.py       # Local test suite
-```
-
----
-
-## Troubleshooting
-
-| Issue | Solution |
-|-------|----------|
-| "Not paired" | Run `./run.sh pair` on one machine, `join` on other |
-| "No peer available" | Check both on same LAN subnet |
-| "Connection refused" | Ensure firewall allows port 9876 |
-| "Authentication failed" | Re-pair devices (`unpair` then `pair`) |
-| Large files slow | Normal - downloads on paste, not copy |
-
-**Enable verbose logging:**
-```bash
-./run.sh start --verbose
-```
-
 **Check status:**
 ```bash
 ./run.sh status
@@ -331,13 +283,3 @@ clipboard-sync/
 - Folders are flattened (files extracted)
 - Images converted to PNG for compatibility
 
----
-
-## Development
-
-Run the local simulation test:
-```bash
-python test_simulation.py
-```
-
-This tests the transfer system without needing two machines.
