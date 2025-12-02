@@ -715,7 +715,10 @@ class DrawerWindow(QWidget):
         logger.info(f"Adding received files to drawer: {transfer_id}")
 
         # Create a fake metadata-like structure for the widget
-        from yank.common.protocol import FileMetadata, TransferMetadata
+        import platform
+        import time
+
+        from yank.common.protocol import FileInfo, TransferMetadata
 
         files = []
         total_size = 0
@@ -723,7 +726,7 @@ class DrawerWindow(QWidget):
             size = path.stat().st_size if path.exists() else 0
             total_size += size
             files.append(
-                FileMetadata(
+                FileInfo(
                     name=path.name, size=size, checksum="", file_index=i, relative_path=str(path)
                 )
             )
@@ -732,6 +735,8 @@ class DrawerWindow(QWidget):
             transfer_id=transfer_id,
             files=files,
             total_size=total_size,
+            timestamp=time.time(),
+            source_os=platform.system().lower(),
             chunk_size=1024 * 1024,
             expires_at=0,
         )
