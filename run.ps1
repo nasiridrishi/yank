@@ -200,7 +200,7 @@ Set-Location '$ScriptRoot'
 & '$activateScript'
 `$timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 Add-Content -Path '$LogFile' -Value "`n========================================`n[`$timestamp] Starting $SessionName`n========================================"
-python -m main start$extraArgs 2>&1 | Tee-Object -FilePath '$LogFile' -Append
+python -m yank.main start$extraArgs 2>&1 | Tee-Object -FilePath '$LogFile' -Append
 "@
 
     # Start the process in a new hidden PowerShell window
@@ -425,7 +425,7 @@ function Start-Pairing {
     $pairingScript = @"
 Set-Location '$ScriptRoot'
 & '$activateScript'
-python -m main pair
+python -m yank.main pair
 "@
 
     powershell -NoProfile -ExecutionPolicy Bypass -Command $pairingScript
@@ -457,7 +457,7 @@ function Join-Device {
     $joinScript = @"
 Set-Location '$ScriptRoot'
 & '$activateScript'
-python -m main join $PeerHost $Pin
+python -m yank.main join $PeerHost $Pin
 "@
 
     powershell -NoProfile -ExecutionPolicy Bypass -Command $joinScript
@@ -475,7 +475,7 @@ function Remove-Pairing {
     $unpairScript = @"
 Set-Location '$ScriptRoot'
 & '$activateScript'
-python -m main unpair
+python -m yank.main unpair
 "@
 
     powershell -NoProfile -ExecutionPolicy Bypass -Command $unpairScript
@@ -493,7 +493,7 @@ function Show-Security {
     $statusScript = @"
 Set-Location '$ScriptRoot'
 & '$activateScript'
-python -m main status
+python -m yank.main status
 "@
 
     powershell -NoProfile -ExecutionPolicy Bypass -Command $statusScript
@@ -511,19 +511,19 @@ function Show-Config {
 
     # Build command based on arguments
     if ($SetKey -eq "--reset") {
-        $configCmd = "python -m main config --reset"
+        $configCmd = "python -m yank.main config --reset"
     }
     elseif ($SetKey -eq "--set" -and $SetValue) {
         # Need to get the actual key and value from Arg2 (which would be the key)
         # This is a bit awkward with positional params
-        $configCmd = "python -m main config --set $SetValue $Arg2"
+        $configCmd = "python -m yank.main config --set $SetValue $Arg2"
     }
     elseif ($SetKey -and $SetKey -ne "--set" -and $SetKey -ne "--reset") {
         # Assume it's --set KEY VALUE format
-        $configCmd = "python -m main config --set $SetKey $SetValue"
+        $configCmd = "python -m yank.main config --set $SetKey $SetValue"
     }
     else {
-        $configCmd = "python -m main config"
+        $configCmd = "python -m yank.main config"
     }
 
     $configScript = @"

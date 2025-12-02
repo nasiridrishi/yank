@@ -20,9 +20,33 @@ parts/
 sdist/
 var/
 wheels/
+pip-wheel-metadata/
+share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+MANIFEST
+
+# Editable install artifacts (build artifacts in root)
+/yank/
+/yank_clipboard_sync.egg-info/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
 
 # Virtual environments
 venv/
@@ -53,6 +77,8 @@ pairing_data.json
 
 # User config (users may customize)
 config.json
+src/yank/config.json
+src/yank/.syncignore
 
 # Temp files
 temp/
@@ -65,3 +91,15 @@ tmp/
 *.pem
 *.key
 secrets/
+
+# Cleanup tracking
+.cleanup_backup_list.txt
+
+# macOS system files
+.AppleDouble
+.LSOverride
+._*
+
+# Linux system files
+.directory
+.Trash-*/

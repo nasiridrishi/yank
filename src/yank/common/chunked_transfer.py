@@ -402,7 +402,7 @@ def create_file_metadata(
     not the actual data.
     """
     import platform
-    from common.protocol import FileInfo, TransferMetadata, calculate_checksum
+    from yank.common.protocol import FileInfo, TransferMetadata, calculate_checksum
 
     files_info = []
     total_size = 0

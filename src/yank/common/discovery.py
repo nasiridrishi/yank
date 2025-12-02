@@ -9,7 +9,7 @@ import threading
 from typing import Optional, Callable, Dict
 from zeroconf import ServiceBrowser, ServiceInfo, Zeroconf, ServiceStateChange
 
-import config
+from yank import config
 
 logger = logging.getLogger(__name__)
 

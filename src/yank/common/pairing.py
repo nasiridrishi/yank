@@ -20,7 +20,7 @@ from typing import Optional, Tuple, Dict
 from dataclasses import dataclass, asdict
 from datetime import datetime
 
-from common.crypto import generate_key, generate_pin, KEY_SIZE
+from yank.common.crypto import generate_key, generate_pin, KEY_SIZE
 
 logger = logging.getLogger(__name__)
 

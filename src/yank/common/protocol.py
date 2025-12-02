@@ -172,7 +172,7 @@ class MessageBuilder:
     @staticmethod
     def _encrypt_message(message: bytes, key: bytes) -> bytes:
         """Encrypt a message and wrap with encrypted header"""
-        from common.crypto import encrypt
+        from yank.common.crypto import encrypt
 
         # Original message is: [4 bytes len][1 byte type][payload]
         # We encrypt everything after the length header
@@ -476,7 +476,7 @@ class MessageParser:
                 return (MessageType.ERROR, b"No encryption key")
 
             try:
-                from common.crypto import decrypt
+                from yank.common.crypto import decrypt
                 decrypted = decrypt(encrypted_data, self.key)
 
                 # Decrypted data is: [1 byte type][payload]

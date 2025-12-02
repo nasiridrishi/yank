@@ -6,8 +6,11 @@
 # Detect OS
 OS_TYPE="$(uname -s)"
 IS_MACOS=false
+IS_LINUX=false
 if [ "$OS_TYPE" = "Darwin" ]; then
     IS_MACOS=true
+elif [ "$OS_TYPE" = "Linux" ]; then
+    IS_LINUX=true
 fi
 
 # Configuration
@@ -22,6 +25,12 @@ PORT=9876
 if $IS_MACOS; then
     PLIST_NAME="com.yank.clipboard-sync.plist"
     PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_NAME"
+fi
+
+# Linux-specific config
+if $IS_LINUX; then
+    SERVICE_NAME="yank-clipboard-sync.service"
+    SERVICE_PATH="$HOME/.config/systemd/user/$SERVICE_NAME"
 fi
 
 cd "$SCRIPT_DIR"
@@ -64,9 +73,16 @@ EOF
     if $IS_MACOS; then
         cat << EOF
 
-Auto-Start (macOS only):
+Auto-Start (macOS):
   install           Install LaunchAgent for auto-start on login
   uninstall         Remove LaunchAgent (disable auto-start)
+EOF
+    elif $IS_LINUX; then
+        cat << EOF
+
+Auto-Start (Linux):
+  install           Install systemd user service for auto-start
+  uninstall         Remove systemd user service (disable auto-start)
 EOF
     fi
 
@@ -84,7 +100,7 @@ Examples:
   $script_name config --set sync_text false  # Disable text sync
 EOF
 
-    if $IS_MACOS; then
+    if $IS_MACOS || $IS_LINUX; then
         echo "  $script_name install                       # Enable auto-start on login"
     fi
 
@@ -153,7 +169,7 @@ start_session() {
     tmux new-session -d -s "$SESSION_NAME" -c "$SCRIPT_DIR"
 
     # Activate venv and run the Python module with logging
-    tmux send-keys -t "$SESSION_NAME" "source $VENV_PATH/bin/activate && python -m main start $extra_args 2>&1 | tee -a $LOG_FILE" Enter
+    tmux send-keys -t "$SESSION_NAME" "source $VENV_PATH/bin/activate && python -m yank.main start $extra_args 2>&1 | tee -a $LOG_FILE" Enter
 
     echo "Session started in detached mode. Use './run.sh attach' to connect."
 }
@@ -264,6 +280,21 @@ show_status() {
             echo "[X] LaunchAgent is not installed (use './run.sh install' to enable auto-start)"
         fi
     fi
+
+    # Linux-specific: show systemd service status
+    if $IS_LINUX; then
+        echo ""
+        echo "=== Auto-Start Status ==="
+        if [ -f "$SERVICE_PATH" ]; then
+            if systemctl --user is-enabled "$SERVICE_NAME" 2>/dev/null | grep -q "enabled"; then
+                echo "[OK] systemd service is installed and enabled (will start on login)"
+            else
+                echo "[!] systemd service is installed but not enabled"
+            fi
+        else
+            echo "[X] systemd service is not installed (use './run.sh install' to enable auto-start)"
+        fi
+    fi
 }
 
 # macOS-specific: Function to install LaunchAgent
@@ -345,10 +376,87 @@ uninstall_launchagent() {
     echo "  clipboard-sync will no longer start automatically on login"
 }
 
+# Linux-specific: Function to install systemd user service
+install_systemd_service() {
+    if ! $IS_LINUX; then
+        echo "This command is only available on Linux."
+        return 1
+    fi
+
+    echo "Installing systemd user service for auto-start..."
+
+    # Create systemd user directory if it doesn't exist
+    mkdir -p "$HOME/.config/systemd/user"
+
+    # Create the service file
+    cat > "$SERVICE_PATH" << EOF
+[Unit]
+Description=Yank - LAN Clipboard Sync
+After=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=$SCRIPT_DIR
+ExecStart=$SCRIPT_DIR/run.sh start
+Restart=on-failure
+RestartSec=10
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=%h/.Xauthority
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+
+[Install]
+WantedBy=default.target
+EOF
+
+    # Reload systemd user daemon
+    systemctl --user daemon-reload
+
+    # Enable the service
+    if systemctl --user enable "$SERVICE_NAME"; then
+        echo "[OK] systemd service installed and enabled successfully"
+        echo "  clipboard-sync will now start automatically on login"
+        echo ""
+        echo "To start now, run: systemctl --user start $SERVICE_NAME"
+    else
+        echo "[X] Failed to enable systemd service"
+        return 1
+    fi
+}
+
+# Linux-specific: Function to uninstall systemd user service
+uninstall_systemd_service() {
+    if ! $IS_LINUX; then
+        echo "This command is only available on Linux."
+        return 1
+    fi
+
+    echo "Removing systemd user service..."
+
+    if [ ! -f "$SERVICE_PATH" ]; then
+        echo "systemd service is not installed."
+        return 1
+    fi
+
+    # Stop the service if running
+    systemctl --user stop "$SERVICE_NAME" 2>/dev/null
+
+    # Disable the service
+    systemctl --user disable "$SERVICE_NAME" 2>/dev/null
+
+    # Remove the service file
+    rm -f "$SERVICE_PATH"
+
+    # Reload systemd user daemon
+    systemctl --user daemon-reload
+
+    echo "[OK] systemd service removed successfully"
+    echo "  clipboard-sync will no longer start automatically on login"
+}
+
 # Function to start pairing mode
 start_pairing() {
     echo "Starting pairing mode..."
-    source "$VENV_PATH/bin/activate" && python -m main pair
+    source "$VENV_PATH/bin/activate" && python -m yank.main pair
 }
 
 # Function to join/pair with another device
@@ -367,27 +475,27 @@ join_device() {
     fi
 
     echo "Connecting to $host..."
-    source "$VENV_PATH/bin/activate" && python -m main join "$host" "$pin"
+    source "$VENV_PATH/bin/activate" && python -m yank.main join "$host" "$pin"
 }
 
 # Function to remove pairing
 remove_pairing() {
-    source "$VENV_PATH/bin/activate" && python -m main unpair
+    source "$VENV_PATH/bin/activate" && python -m yank.main unpair
 }
 
 # Function to show security status
 show_security() {
-    source "$VENV_PATH/bin/activate" && python -m main status
+    source "$VENV_PATH/bin/activate" && python -m yank.main status
 }
 
 # Function to show/edit configuration
 show_config() {
     if [ "$1" = "--reset" ]; then
-        source "$VENV_PATH/bin/activate" && python -m main config --reset
+        source "$VENV_PATH/bin/activate" && python -m yank.main config --reset
     elif [ "$1" = "--set" ] && [ -n "$2" ] && [ -n "$3" ]; then
-        source "$VENV_PATH/bin/activate" && python -m main config --set "$2" "$3"
+        source "$VENV_PATH/bin/activate" && python -m yank.main config --set "$2" "$3"
     else
-        source "$VENV_PATH/bin/activate" && python -m main config
+        source "$VENV_PATH/bin/activate" && python -m yank.main config
     fi
 }
 
@@ -434,10 +542,22 @@ case "$COMMAND" in
         show_config "$2" "$3" "$4"
         ;;
     install)
-        install_launchagent
+        if $IS_MACOS; then
+            install_launchagent
+        elif $IS_LINUX; then
+            install_systemd_service
+        else
+            echo "Auto-start installation is only supported on macOS and Linux."
+        fi
         ;;
     uninstall)
-        uninstall_launchagent
+        if $IS_MACOS; then
+            uninstall_launchagent
+        elif $IS_LINUX; then
+            uninstall_systemd_service
+        else
+            echo "Auto-start uninstallation is only supported on macOS and Linux."
+        fi
         ;;
     help|--help|-h)
         show_help

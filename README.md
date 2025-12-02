@@ -1,8 +1,8 @@
 # Yank - LAN Clipboard Sync
 
-Cross-platform clipboard synchronization between Windows and macOS over LAN.
+Cross-platform clipboard synchronization between Windows, macOS, and Linux over LAN.
 
-Copy files or text on one machine → instantly paste on the other.
+Copy files or text on one machine, instantly paste on the other.
 
 **Features:**
 - Secure PIN pairing with AES-256-GCM encryption
@@ -29,28 +29,75 @@ Copy files or text on one machine → instantly paste on the other.
 └─────────────────────┘                    └─────────────────────┘
 ```
 
+## Installation
+
+### Requirements
+
+- Python 3.8+ (Python 3.10+ recommended)
+- **Linux only:** GTK3 system packages (see below)
+
+### Linux System Dependencies
+
+Install GTK3 before running setup:
+
+```bash
+# Ubuntu/Debian
+sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0
+
+# Fedora/RHEL
+sudo dnf install python3-gobject gtk3
+
+# Arch
+sudo pacman -S python-gobject gtk3
+```
+
+### Setup
+
+**One-command install (recommended):**
+
+```bash
+# macOS/Linux
+./setup.sh
+
+# Windows
+.\setup.ps1
+```
+
+The setup script automatically:
+- Detects your platform
+- Creates virtual environment
+- Installs all dependencies from pyproject.toml
+- Verifies installation
+
+**Manual install:**
+
+```bash
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # Linux/macOS
+# .\venv\Scripts\activate  # Windows
+
+# Upgrade pip
+python -m pip install --upgrade pip setuptools wheel
+
+# Install with platform-specific dependencies
+pip install -e ".[windows]"  # Windows
+pip install -e ".[macos]"    # macOS
+pip install -e ".[linux]"    # Linux
+```
+
+---
+
 ## Quick Start
 
-### 1. Install Dependencies
-
-**Windows:**
-```powershell
-pip install pywin32 zeroconf Pillow cryptography
-```
-
-**macOS:**
-```bash
-pip install pyobjc zeroconf Pillow cryptography
-```
-
-### 2. Pair Devices (One-Time Setup)
+### 1. Pair Devices (One-Time Setup)
 
 **On the first machine:**
 ```bash
 # Windows
 .\run.ps1 pair
 
-# macOS
+# macOS/Linux
 ./run.sh pair
 ```
 This displays a 6-digit PIN.
@@ -60,11 +107,11 @@ This displays a 6-digit PIN.
 # Windows
 .\run.ps1 join 192.168.1.x 123456
 
-# macOS
+# macOS/Linux
 ./run.sh join 192.168.1.x 123456
 ```
 
-### 3. Start Syncing
+### 2. Start Syncing
 
 **Windows:**
 ```powershell
@@ -72,7 +119,7 @@ This displays a 6-digit PIN.
 # or just: .\run.ps1
 ```
 
-**macOS:**
+**macOS/Linux:**
 ```bash
 ./run.sh start
 # or just: ./run.sh
@@ -84,26 +131,26 @@ This displays a 6-digit PIN.
 
 Once both sides are running:
 
-| Action | Windows | Mac |
-|--------|---------|-----|
-| Copy files | Select in Explorer → Ctrl+C | Select in Finder → Cmd+C |
-| Copy text | Ctrl+C | Cmd+C |
-| Paste | Ctrl+V | Cmd+V |
+| Action | Windows | Mac | Linux |
+|--------|---------|-----|-------|
+| Copy files | Select in Explorer, Ctrl+C | Select in Finder, Cmd+C | Select in file manager, Ctrl+C |
+| Copy text | Ctrl+C | Cmd+C | Ctrl+C |
+| Paste | Ctrl+V | Cmd+V | Ctrl+V |
 
 ### Lazy Transfer (Large Files)
 
 For files over 10MB, Yank uses lazy transfer:
-1. **Copy** → Only metadata is sent (instant, even for 100GB!)
-2. **Paste** → File downloads on-demand
+1. **Copy** - Only metadata is sent (instant, even for 100GB!)
+2. **Paste** - File downloads on-demand
 
 Console output:
 ```
->> Announced 3 file(s) to Mac (2.5 GB)
-   Files ready for download on Mac
+Announced 3 file(s) to Mac (2.5 GB)
+Files ready for download on Mac
 
-<< Files announced from Windows:
-   - big_video.mp4 (2.5 GB)
-   Ready to paste (Cmd+V) - download will start when you paste
+Files announced from Windows:
+  - big_video.mp4 (2.5 GB)
+  Ready to paste (Cmd+V) - download will start when you paste
 ```
 
 ---
@@ -196,6 +243,19 @@ netsh advfirewall firewall add rule name="Yank" dir=in action=allow protocol=tcp
 **macOS:**
 Usually no action needed on home networks.
 
+**Linux:**
+```bash
+# UFW (Ubuntu/Debian)
+sudo ufw allow 9876/tcp
+
+# firewalld (Fedora/RHEL/CentOS)
+sudo firewall-cmd --permanent --add-port=9876/tcp
+sudo firewall-cmd --reload
+
+# iptables (manual)
+sudo iptables -A INPUT -p tcp --dport 9876 -j ACCEPT
+```
+
 ---
 
 ## Project Structure
@@ -216,6 +276,9 @@ clipboard-sync/
 │   └── virtual_clipboard.py # IDataObject for lazy transfer
 ├── macos/
 │   ├── clipboard.py         # NSPasteboard via PyObjC
+│   └── virtual_clipboard.py # Placeholder-based clipboard
+├── linux/
+│   ├── clipboard.py         # GTK3 clipboard (X11 + Wayland)
 │   └── virtual_clipboard.py # Placeholder-based clipboard
 ├── agent.py                 # Core sync agent
 ├── main.py                  # Cross-platform entry point

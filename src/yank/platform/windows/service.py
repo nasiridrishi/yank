@@ -22,9 +22,9 @@ except ImportError:
     HAS_WIN32_SERVICE = False
     print("pywin32 service support not available")
 
-import config
-from agent import SyncAgent
-from windows.clipboard import WindowsClipboardMonitor
+from yank import config
+from yank.agent import SyncAgent
+from yank.platform.windows.clipboard import WindowsClipboardMonitor
 
 logger = logging.getLogger(__name__)
 

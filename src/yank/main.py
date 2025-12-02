@@ -28,32 +28,36 @@ import argparse
 import threading
 from pathlib import Path
 
-import config
-from agent import SyncAgent
-from common.protocol import TransferMetadata
-from common.pairing import (
+from yank import config
+from yank.agent import SyncAgent
+from yank.common.protocol import TransferMetadata
+from yank.common.pairing import (
     PairingServer, PairingClient,
     get_pairing_manager, get_device_name
 )
-from common.singleton import ensure_single_instance, release_singleton, get_existing_instance_pid
-from common.user_config import get_config, get_config_manager, print_config, format_size
-from common.syncignore import get_syncignore, filter_files
-from common.chunked_transfer import format_bytes
+from yank.common.singleton import ensure_single_instance, release_singleton, get_existing_instance_pid
+from yank.common.user_config import get_config, get_config_manager, print_config, format_size
+from yank.common.syncignore import get_syncignore, filter_files
+from yank.common.chunked_transfer import format_bytes
 
 # Detect OS and import appropriate clipboard module
 PLATFORM = platform.system()
 
 if PLATFORM == 'Windows':
-    from windows.clipboard import WindowsClipboardMonitor as ClipboardMonitor
+    from yank.platform import ClipboardMonitor
     PLATFORM_NAME = "Windows"
     RUN_SCRIPT = "run.ps1"
 elif PLATFORM == 'Darwin':
-    from macos.clipboard import MacClipboardMonitor as ClipboardMonitor
+    from yank.platform import ClipboardMonitor
     PLATFORM_NAME = "macOS"
+    RUN_SCRIPT = "run.sh"
+elif PLATFORM == 'Linux':
+    from yank.platform import ClipboardMonitor
+    PLATFORM_NAME = "Linux"
     RUN_SCRIPT = "run.sh"
 else:
     print(f"Unsupported platform: {PLATFORM}")
-    print("This application only supports Windows and macOS.")
+    print("This application only supports Windows, macOS, and Linux.")
     sys.exit(1)
 
 # Setup logging

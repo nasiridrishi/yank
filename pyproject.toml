@@ -1,0 +1,130 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yank-clipboard-sync"
+version = "1.0.0"
+description = "Cross-platform LAN clipboard synchronization for Windows, macOS, and Linux"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+keywords = ["clipboard", "sync", "lan", "cross-platform", "file-transfer"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "Topic :: Desktop Environment",
+    "Topic :: System :: Networking",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+]
+
+# Common dependencies for all platforms
+dependencies = [
+    "zeroconf>=0.131.0",        # mDNS peer discovery
+    "Pillow>=10.0.0",           # Image clipboard support
+    "cryptography>=41.0.0",     # AES-256-GCM encryption
+]
+
+[project.optional-dependencies]
+# Windows-specific dependencies
+windows = [
+    "pywin32>=306; sys_platform == 'win32'",
+]
+
+# macOS-specific dependencies
+macos = [
+    "pyobjc-core>=10.0; sys_platform == 'darwin'",
+    "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
+]
+
+# Linux-specific dependencies
+linux = [
+    "PyGObject>=3.42.0; sys_platform == 'linux'",
+]
+
+# Development dependencies
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "black>=23.0",
+    "mypy>=1.0",
+    "ruff>=0.1.0",
+]
+
+# All platform-specific dependencies
+all = [
+    "pywin32>=306; sys_platform == 'win32'",
+    "pyobjc-core>=10.0; sys_platform == 'darwin'",
+    "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
+    "PyGObject>=3.42.0; sys_platform == 'linux'",
+]
+
+[project.scripts]
+yank = "yank.main:main"
+
+[project.urls]
+Homepage = "https://github.com/yourusername/yank"
+Repository = "https://github.com/yourusername/yank.git"
+Issues = "https://github.com/yourusername/yank/issues"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["yank*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+yank = ["*.json", "*.txt"]
+
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310', 'py311']
+include = '\.pyi?$'
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "B",  # flake8-bugbear
+    "C4", # flake8-comprehensions
+]
+ignore = [
+    "E501",  # line too long, handled by black
+    "B008",  # do not perform function calls in argument defaults
+]
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+strict_optional = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --cov=yank --cov-report=term-missing"

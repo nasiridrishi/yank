@@ -23,8 +23,8 @@ import uuid
 from typing import Optional, Callable, List, Dict
 from pathlib import Path
 
-import config
-from common.protocol import (
+from yank import config
+from yank.common.protocol import (
     MessageType,
     MessageBuilder,
     MessageParser,
@@ -33,10 +33,10 @@ from common.protocol import (
     pack_files,
     unpack_files
 )
-from common.discovery import start_discovery, stop_discovery, get_discovery
-from common.pairing import get_pairing_manager, is_paired, get_encryption_key
-from common.file_registry import FileRegistry, TransferStatus
-from common.chunked_transfer import (
+from yank.common.discovery import start_discovery, stop_discovery, get_discovery
+from yank.common.pairing import get_pairing_manager, is_paired, get_encryption_key
+from yank.common.file_registry import FileRegistry, TransferStatus
+from yank.common.chunked_transfer import (
     ChunkedFileReader,
     ChunkedFileWriter,
     ProgressTracker,
@@ -44,7 +44,7 @@ from common.chunked_transfer import (
     format_bytes,
     DEFAULT_CHUNK_SIZE
 )
-from common.transfer_manager import get_transfer_manager, TransferManager
+from yank.common.transfer_manager import get_transfer_manager, TransferManager
 
 logger = logging.getLogger(__name__)
 

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Callable
 from dataclasses import dataclass, field
 
-from common.protocol import TransferMetadata, FileInfo
+from yank.common.protocol import TransferMetadata, FileInfo
 
 logger = logging.getLogger(__name__)
 
