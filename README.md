@@ -63,12 +63,6 @@ sudo pacman -S python-gobject gtk3
 .\setup.ps1
 ```
 
-The setup script automatically:
-- Detects your platform
-- Creates virtual environment
-- Installs all dependencies from pyproject.toml
-- Verifies installation
-
 **Manual install:**
 
 ```bash
