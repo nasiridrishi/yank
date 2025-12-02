@@ -173,7 +173,7 @@ Files announced from Windows:
 
 ## Configuration
 
-### User Config (`sync_config.json`)
+### User Config (`config.json`)
 
 Created automatically on first run:
 
