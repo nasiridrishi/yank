@@ -200,23 +200,28 @@ class DrawerApp(QObject):
             self.signals.connection_changed.emit(False, "")
             return
 
-        # Try to ping the peer in a background thread
-        def do_ping():
-            try:
-                is_connected = self._agent.ping_peer()
-                paired_device = self._pairing_manager.get_paired_device()
-                device_name = paired_device.device_name if paired_device else "Unknown"
+        paired_device = self._pairing_manager.get_paired_device()
+        device_name = paired_device.device_name if paired_device else "Unknown"
 
-                if is_connected:
-                    self.signals.connection_changed.emit(True, device_name)
-                else:
-                    self.signals.connection_changed.emit(False, "")
-            except Exception as e:
-                logger.debug(f"Ping failed: {e}")
-                self.signals.connection_changed.emit(False, "")
+        # Check if we have a peer IP (either from discovery or manual setting)
+        peer_ip = None
+        with self._agent._lock:
+            peer_ip = self._agent._peer_ip
 
-        thread = threading.Thread(target=do_ping, daemon=True)
-        thread.start()
+        if not peer_ip:
+            # Try to get from discovery
+            from yank.common.discovery import get_discovery
+
+            discovery = get_discovery()
+            if discovery:
+                peer = discovery.get_first_peer()
+                if peer:
+                    peer_ip = peer[0]
+
+        if peer_ip:
+            self.signals.connection_changed.emit(True, device_name)
+        else:
+            self.signals.connection_changed.emit(False, "")
 
     # ========== Callbacks from SyncAgent (run in agent thread) ==========
 
