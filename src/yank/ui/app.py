@@ -235,7 +235,11 @@ class DrawerApp(QObject):
         import uuid
 
         transfer_id = str(uuid.uuid4())
-        logger.info(f"Received {len(file_paths)} files directly, showing in drawer")
+        logger.info(f"=== FILES RECEIVED ===")
+        logger.info(f"Count: {len(file_paths)}")
+        for p in file_paths:
+            logger.info(f"  - {p}")
+        logger.info(f"Emitting files_received signal with transfer_id: {transfer_id}")
         self.signals.files_received.emit(transfer_id, file_paths)
 
     def _on_text_received(self, text: str):
@@ -245,7 +249,12 @@ class DrawerApp(QObject):
 
     def _on_files_announced(self, transfer_id: str, metadata: TransferMetadata):
         """Called when files are announced (lazy transfer)."""
-        # Emit signal to update UI (thread-safe)
+        logger.info(f"=== FILES ANNOUNCED ===")
+        logger.info(f"Transfer ID: {transfer_id}")
+        logger.info(f"File count: {len(metadata.files)}")
+        for f in metadata.files:
+            logger.info(f"  - {f.name} ({f.size} bytes)")
+        logger.info(f"Emitting files_announced signal")
         self.signals.files_announced.emit(transfer_id, metadata)
 
     def _on_transfer_progress(
