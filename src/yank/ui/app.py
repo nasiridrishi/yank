@@ -11,7 +11,7 @@ import threading
 from pathlib import Path
 from typing import Callable, Optional
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, QThread, QTimer, Signal
 from PySide6.QtWidgets import QApplication
 
 from yank import config
@@ -137,6 +137,11 @@ class DrawerApp(QObject):
         # Update connection status
         self._update_status()
 
+        # Start periodic connection check
+        self._connection_timer = QTimer()
+        self._connection_timer.timeout.connect(self._check_connection)
+        self._connection_timer.start(5000)  # Check every 5 seconds
+
         logger.info("Drawer app started")
 
         # Run Qt event loop
@@ -167,14 +172,15 @@ class DrawerApp(QObject):
         # Transfer complete -> update item state
         self.signals.transfer_complete.connect(self._drawer.mark_transfer_complete)
 
-        # Connection status -> update tray icon
+        # Connection status -> update tray icon AND drawer
         self.signals.connection_changed.connect(self._tray.update_connection_status)
+        self.signals.connection_changed.connect(self._drawer.update_connection_status)
 
         # Download requests from UI -> agent
         self.signals.download_requested.connect(self._handle_download_request)
 
     def _update_status(self):
-        """Update connection status in UI."""
+        """Update connection status in UI based on pairing."""
         is_paired = self._pairing_manager.is_paired()
         if is_paired:
             paired_device = self._pairing_manager.get_paired_device()
@@ -182,6 +188,35 @@ class DrawerApp(QObject):
             self.signals.connection_changed.emit(True, device_name)
         else:
             self.signals.connection_changed.emit(False, "")
+
+    def _check_connection(self):
+        """Periodically check if peer is reachable."""
+        if not self._agent:
+            return
+
+        # Check pairing status
+        is_paired = self._pairing_manager.is_paired()
+        if not is_paired:
+            self.signals.connection_changed.emit(False, "")
+            return
+
+        # Try to ping the peer in a background thread
+        def do_ping():
+            try:
+                is_connected = self._agent.ping_peer()
+                paired_device = self._pairing_manager.get_paired_device()
+                device_name = paired_device.device_name if paired_device else "Unknown"
+
+                if is_connected:
+                    self.signals.connection_changed.emit(True, device_name)
+                else:
+                    self.signals.connection_changed.emit(False, "")
+            except Exception as e:
+                logger.debug(f"Ping failed: {e}")
+                self.signals.connection_changed.emit(False, "")
+
+        thread = threading.Thread(target=do_ping, daemon=True)
+        thread.start()
 
     # ========== Callbacks from SyncAgent (run in agent thread) ==========
 
