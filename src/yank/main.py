@@ -19,40 +19,45 @@ Commands:
     python -m main status       Show pairing status
     python -m main config       Show/edit configuration
 """
-import sys
+
+import argparse
+import logging
 import os
 import platform
-import logging
 import signal
-import argparse
+import sys
 import threading
 from pathlib import Path
 
 from yank import config
 from yank.agent import SyncAgent
-from yank.common.protocol import TransferMetadata
-from yank.common.pairing import (
-    PairingServer, PairingClient,
-    get_pairing_manager, get_device_name
-)
-from yank.common.singleton import ensure_single_instance, release_singleton, get_existing_instance_pid
-from yank.common.user_config import get_config, get_config_manager, print_config, format_size
-from yank.common.syncignore import get_syncignore, filter_files
 from yank.common.chunked_transfer import format_bytes
+from yank.common.pairing import PairingClient, PairingServer, get_device_name, get_pairing_manager
+from yank.common.protocol import TransferMetadata
+from yank.common.singleton import (
+    ensure_single_instance,
+    get_existing_instance_pid,
+    release_singleton,
+)
+from yank.common.syncignore import filter_files, get_syncignore
+from yank.common.user_config import format_size, get_config, get_config_manager, print_config
 
 # Detect OS and import appropriate clipboard module
 PLATFORM = platform.system()
 
-if PLATFORM == 'Windows':
+if PLATFORM == "Windows":
     from yank.platform import ClipboardMonitor
+
     PLATFORM_NAME = "Windows"
     RUN_SCRIPT = "run.ps1"
-elif PLATFORM == 'Darwin':
+elif PLATFORM == "Darwin":
     from yank.platform import ClipboardMonitor
+
     PLATFORM_NAME = "macOS"
     RUN_SCRIPT = "run.sh"
-elif PLATFORM == 'Linux':
+elif PLATFORM == "Linux":
     from yank.platform import ClipboardMonitor
+
     PLATFORM_NAME = "Linux"
     RUN_SCRIPT = "run.sh"
 else:
@@ -63,11 +68,8 @@ else:
 # Setup logging
 logging.basicConfig(
     level=getattr(logging, config.LOG_LEVEL),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(config.LOG_FILE)
-    ]
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(config.LOG_FILE)],
 )
 logger = logging.getLogger(__name__)
 
@@ -115,7 +117,7 @@ class ClipboardSync:
             on_files_announced=self._on_files_announced,
             on_transfer_progress=self._on_transfer_progress,
             port=self.port,
-            require_pairing=self.require_pairing
+            require_pairing=self.require_pairing,
         )
 
         # Set peer if provided
@@ -129,7 +131,7 @@ class ClipboardSync:
             poll_interval=config.POLL_INTERVAL,
             sync_text=self.user_config.sync_text,
             sync_files=self.user_config.sync_files,
-            sync_images=self.user_config.sync_images
+            sync_images=self.user_config.sync_images,
         )
 
         # Start components
@@ -144,9 +146,9 @@ class ClipboardSync:
         copy_shortcut = "Ctrl+C" if PLATFORM == "Windows" else "Cmd+C"
         paste_shortcut = "Ctrl+V" if PLATFORM == "Windows" else "Cmd+V"
 
-        print("\n" + "="*50)
+        print("\n" + "=" * 50)
         print(f"  LAN Clipboard Sync - {PLATFORM_NAME}")
-        print("="*50)
+        print("=" * 50)
         print(f"  Listening on port: {self.port}")
         if self.peer_ip:
             print(f"  Peer: {self.peer_ip}:{self.port}")
@@ -155,7 +157,9 @@ class ClipboardSync:
         if self.require_pairing:
             manager = get_pairing_manager()
             if manager.is_paired():
-                print(f"  Security: ENCRYPTED (paired with {manager.get_paired_device().device_name})")
+                print(
+                    f"  Security: ENCRYPTED (paired with {manager.get_paired_device().device_name})"
+                )
             else:
                 print("  Security: ENABLED (no device paired)")
         else:
@@ -167,7 +171,7 @@ class ClipboardSync:
         print(f"    Text:   {'ON' if self.user_config.sync_text else 'OFF'}")
         print(f"    Images: {'ON' if self.user_config.sync_images else 'OFF'}")
 
-        print("="*50)
+        print("=" * 50)
         print(f"\nCopy files or text ({copy_shortcut}) to sync to your {other_platform}.")
         print("Press Ctrl+C to stop.\n")
 
@@ -211,10 +215,7 @@ class ClipboardSync:
             return
 
         # Calculate total size
-        total_size = sum(
-            f.stat().st_size if f.is_file() else 0
-            for f in file_paths
-        )
+        total_size = sum(f.stat().st_size if f.is_file() else 0 for f in file_paths)
 
         # Check against config limits
         max_total = self.user_config.max_total_size
@@ -228,7 +229,9 @@ class ClipboardSync:
         for f in file_paths:
             if f.is_file() and f.stat().st_size > self.user_config.max_file_size:
                 logger.warning(f"File {f.name} exceeds max file size")
-                print(f"! File '{f.name}' too large. Max: {format_size(self.user_config.max_file_size)}")
+                print(
+                    f"! File '{f.name}' too large. Max: {format_size(self.user_config.max_file_size)}"
+                )
                 return
 
         other_platform = "Mac" if PLATFORM == "Windows" else "Windows"
@@ -240,7 +243,9 @@ class ClipboardSync:
             transfer_id = self.agent.announce_files(file_paths)
 
             if transfer_id:
-                print(f">> Announced {len(file_paths)} file(s) to {other_platform} ({format_bytes(total_size)})")
+                print(
+                    f">> Announced {len(file_paths)} file(s) to {other_platform} ({format_bytes(total_size)})"
+                )
                 print(f"   Files ready for download on {other_platform}")
             else:
                 print(f"X Failed to announce files. Check if {other_platform} is running.")
@@ -250,7 +255,9 @@ class ClipboardSync:
             success = self.agent.send_files(file_paths)
 
             if success:
-                print(f">> Sent {len(file_paths)} file(s) to {other_platform} ({format_size(total_size)})")
+                print(
+                    f">> Sent {len(file_paths)} file(s) to {other_platform} ({format_size(total_size)})"
+                )
             else:
                 print(f"X Failed to send files. Check if {other_platform} is running.")
 
@@ -283,10 +290,12 @@ class ClipboardSync:
             return
 
         # Check size limit
-        text_size = len(text.encode('utf-8'))
+        text_size = len(text.encode("utf-8"))
         if text_size > self.user_config.max_text_size:
             logger.warning(f"Text too large ({format_size(text_size)}), ignoring")
-            print(f"⚠ Text too large ({format_size(text_size)}). Max: {format_size(self.user_config.max_text_size)}")
+            print(
+                f"⚠ Text too large ({format_size(text_size)}). Max: {format_size(self.user_config.max_text_size)}"
+            )
             return
 
         logger.info(f"Sending text to peer ({len(text)} chars)...")
@@ -296,7 +305,7 @@ class ClipboardSync:
 
         if success:
             preview = text[:50] + "..." if len(text) > 50 else text
-            preview = preview.replace('\n', ' ').replace('\r', '')
+            preview = preview.replace("\n", " ").replace("\r", "")
             print(f">> Sent text to {other_platform} ({len(text)} chars): {preview}")
         else:
             print(f"X Failed to send text. Check if {other_platform} is running.")
@@ -313,7 +322,7 @@ class ClipboardSync:
         paste_shortcut = "Ctrl+V" if PLATFORM == "Windows" else "Cmd+V"
 
         preview = text[:50] + "..." if len(text) > 50 else text
-        preview = preview.replace('\n', ' ').replace('\r', '')
+        preview = preview.replace("\n", " ").replace("\r", "")
 
         print(f">> Received text from {other_platform} ({len(text)} chars): {preview}")
         print(f"   Ready to paste ({paste_shortcut})")
@@ -343,7 +352,9 @@ class ClipboardSync:
         use_virtual = self._try_set_virtual_clipboard(transfer_id, metadata)
         if use_virtual:
             if PLATFORM == "Windows":
-                print(f"\n   Ready to paste ({paste_shortcut}) - download will start when you paste")
+                print(
+                    f"\n   Ready to paste ({paste_shortcut}) - download will start when you paste"
+                )
             else:
                 print(f"\n   Ready to paste ({paste_shortcut}) - downloading in background...")
             return
@@ -351,9 +362,7 @@ class ClipboardSync:
         # Fall back to auto-download
         print(f"\n   Downloading files...")
         download_thread = threading.Thread(
-            target=self._download_announced_files,
-            args=(transfer_id, metadata),
-            daemon=True
+            target=self._download_announced_files, args=(transfer_id, metadata), daemon=True
         )
         download_thread.start()
 
@@ -375,12 +384,7 @@ class ClipboardSync:
         try:
             # Prepare file info for virtual clipboard
             files = [
-                {
-                    'name': f.name,
-                    'size': f.size,
-                    'checksum': f.checksum,
-                    'file_index': f.file_index
-                }
+                {"name": f.name, "size": f.size, "checksum": f.checksum, "file_index": f.file_index}
                 for f in metadata.files
             ]
 
@@ -390,9 +394,7 @@ class ClipboardSync:
 
             # Try to set virtual clipboard
             success = self.clipboard_monitor.set_virtual_clipboard_files(
-                files,
-                transfer_id,
-                download_callback
+                files, transfer_id, download_callback
             )
 
             return success
@@ -421,7 +423,9 @@ class ClipboardSync:
             logger.error(f"Download error: {e}")
             print(f"\nX Download error: {e}")
 
-    def _on_transfer_progress(self, transfer_id: str, bytes_done: int, bytes_total: int, current_file: str):
+    def _on_transfer_progress(
+        self, transfer_id: str, bytes_done: int, bytes_total: int, current_file: str
+    ):
         """Called during file transfer to show progress"""
         import time
 
@@ -438,7 +442,7 @@ class ClipboardSync:
         # Progress bar
         bar_width = 20
         filled = int(bar_width * percent / 100)
-        bar = '#' * filled + '-' * (bar_width - filled)
+        bar = "#" * filled + "-" * (bar_width - filled)
 
         # Print on same line (carriage return)
         file_display = current_file[:30] + "..." if len(current_file) > 33 else current_file
@@ -453,6 +457,7 @@ class ClipboardSync:
         try:
             while self._running:
                 import time
+
                 time.sleep(0.5)
         except KeyboardInterrupt:
             pass
@@ -519,7 +524,7 @@ def cmd_unpair(args):
     print(f"Paired at: {paired.paired_at}")
 
     confirm = input("\nAre you sure you want to unpair? (y/N): ")
-    if confirm.lower() == 'y':
+    if confirm.lower() == "y":
         manager.clear_pairing()
         print("\n[OK] Pairing removed.")
     else:
@@ -530,9 +535,9 @@ def cmd_status(args):
     """Show pairing status"""
     manager = get_pairing_manager()
 
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print("  Clipboard Sync - Status")
-    print(f"{'='*50}")
+    print(f"{'=' * 50}")
     print(f"\n  This device: {get_device_name()}")
 
     if manager.is_paired():
@@ -549,7 +554,7 @@ def cmd_status(args):
         print(f"    1. Run '{RUN_SCRIPT} pair' on this device")
         print(f"    2. Run '{RUN_SCRIPT} join <IP> <PIN>' on the other device")
 
-    print(f"\n{'='*50}\n")
+    print(f"\n{'=' * 50}\n")
 
 
 def cmd_config(args):
@@ -571,13 +576,13 @@ def cmd_config(args):
     if args.set:
         key, value = args.set
         # Convert value to appropriate type
-        if value.lower() in ('true', 'on', 'yes', '1'):
+        if value.lower() in ("true", "on", "yes", "1"):
             value = True
-        elif value.lower() in ('false', 'off', 'no', '0'):
+        elif value.lower() in ("false", "off", "no", "0"):
             value = False
         elif value.isdigit():
             value = int(value)
-        elif value.replace('.', '').isdigit():
+        elif value.replace(".", "").isdigit():
             value = float(value)
 
         if config_mgr.set(key, value):
@@ -586,7 +591,7 @@ def cmd_config(args):
             print(f"[ERROR] Unknown config key: {key}")
             print("\nAvailable keys:")
             for k in vars(user_cfg):
-                if not k.startswith('_'):
+                if not k.startswith("_"):
                     print(f"  - {k}")
         return
 
@@ -611,9 +616,10 @@ def cmd_stop(args):
     print(f"\nStopping clipboard-sync (PID {pid})...")
 
     try:
-        if os.name == 'nt':
+        if os.name == "nt":
             # Windows - send SIGTERM equivalent
             import ctypes
+
             PROCESS_TERMINATE = 0x0001
             kernel32 = ctypes.windll.kernel32
             handle = kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
@@ -658,11 +664,7 @@ def cmd_start(args):
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    app = ClipboardSync(
-        peer_ip=args.peer,
-        port=args.port,
-        require_pairing=not args.no_security
-    )
+    app = ClipboardSync(peer_ip=args.peer, port=args.port, require_pairing=not args.no_security)
 
     # Handle signals
     def signal_handler(sig, frame):
@@ -681,13 +683,55 @@ def cmd_start(args):
         release_singleton()
 
 
+def cmd_drawer(args):
+    """Start the drawer desktop app (GUI mode)"""
+    # Check for existing instance
+    if not ensure_single_instance("clipboard-sync-drawer", args.port):
+        existing_pid = get_existing_instance_pid()
+        print(f"\n[ERROR] Another instance is already running (PID {existing_pid})")
+        print(f"Stop the existing instance first, or use '{RUN_SCRIPT} stop'")
+        sys.exit(1)
+
+    manager = get_pairing_manager()
+
+    if not manager.is_paired():
+        print("\n[WARNING] No device paired!")
+        print(f"Run '{RUN_SCRIPT} pair' first to pair with another device.")
+        print("Or use '--no-security' to run without pairing (not recommended).\n")
+
+        if not args.no_security:
+            release_singleton()
+            sys.exit(1)
+
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    # Import and start drawer app
+    try:
+        from yank.ui import DrawerApp
+    except ImportError as e:
+        print(f"\n[ERROR] Could not import drawer UI: {e}")
+        print("Make sure PySide6 is installed: pip install PySide6")
+        release_singleton()
+        sys.exit(1)
+
+    app = DrawerApp(peer_ip=args.peer, port=args.port, require_pairing=not args.no_security)
+
+    try:
+        exit_code = app.start()
+        sys.exit(exit_code)
+    finally:
+        release_singleton()
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description=f'LAN Clipboard Sync - {PLATFORM_NAME}',
+        description=f"LAN Clipboard Sync - {PLATFORM_NAME}",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
 Commands:
-  start       Start the clipboard sync agent (default)
+  start       Start the clipboard sync agent (CLI mode, default)
+  drawer      Start the drawer desktop app (GUI mode)
   stop        Stop the running instance
   pair        Enter pairing mode - displays PIN for other device
   join        Pair with another device using IP and PIN
@@ -696,76 +740,100 @@ Commands:
   config      Show/edit configuration
 
 Examples:
-  python -m main                          Start syncing
+  python -m main                          Start syncing (CLI mode)
+  python -m main drawer                   Start drawer app (GUI mode)
   python -m main pair                     Show PIN for pairing
   python -m main join 192.168.1.5 123456  Pair with device
   python -m main status                   Check pairing status
   python -m main config                   View configuration
   python -m main config --set sync_text false  Disable text sync
-"""
+""",
     )
 
-    subparsers = parser.add_subparsers(dest='command', help='Command to run')
+    subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
     # Start command (default)
-    start_parser = subparsers.add_parser('start', help='Start clipboard sync')
-    start_parser.add_argument('-p', '--peer', type=str, help='Peer IP address')
-    start_parser.add_argument('--port', type=int, default=config.PORT, help=f'Port (default: {config.PORT})')
-    start_parser.add_argument('-v', '--verbose', action='store_true', help='Verbose logging')
-    start_parser.add_argument('--no-security', action='store_true', help='Disable pairing requirement (not recommended)')
+    start_parser = subparsers.add_parser("start", help="Start clipboard sync")
+    start_parser.add_argument("-p", "--peer", type=str, help="Peer IP address")
+    start_parser.add_argument(
+        "--port", type=int, default=config.PORT, help=f"Port (default: {config.PORT})"
+    )
+    start_parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
+    start_parser.add_argument(
+        "--no-security", action="store_true", help="Disable pairing requirement (not recommended)"
+    )
 
     # Pair command
-    pair_parser = subparsers.add_parser('pair', help='Enter pairing mode')
-    pair_parser.add_argument('--timeout', type=int, default=120, help='Pairing timeout in seconds (default: 120)')
+    pair_parser = subparsers.add_parser("pair", help="Enter pairing mode")
+    pair_parser.add_argument(
+        "--timeout", type=int, default=120, help="Pairing timeout in seconds (default: 120)"
+    )
 
     # Join command
-    join_parser = subparsers.add_parser('join', help='Join/pair with another device')
-    join_parser.add_argument('host', nargs='?', help='IP address of device to pair with')
-    join_parser.add_argument('pin', nargs='?', help='PIN displayed on other device')
+    join_parser = subparsers.add_parser("join", help="Join/pair with another device")
+    join_parser.add_argument("host", nargs="?", help="IP address of device to pair with")
+    join_parser.add_argument("pin", nargs="?", help="PIN displayed on other device")
+
+    # Drawer command (GUI mode)
+    drawer_parser = subparsers.add_parser("drawer", help="Start drawer desktop app (GUI mode)")
+    drawer_parser.add_argument("-p", "--peer", type=str, help="Peer IP address")
+    drawer_parser.add_argument(
+        "--port", type=int, default=config.PORT, help=f"Port (default: {config.PORT})"
+    )
+    drawer_parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
+    drawer_parser.add_argument(
+        "--no-security", action="store_true", help="Disable pairing requirement (not recommended)"
+    )
 
     # Stop command
-    subparsers.add_parser('stop', help='Stop running instance')
+    subparsers.add_parser("stop", help="Stop running instance")
 
     # Unpair command
-    subparsers.add_parser('unpair', help='Remove current pairing')
+    subparsers.add_parser("unpair", help="Remove current pairing")
 
     # Status command
-    subparsers.add_parser('status', help='Show pairing status')
+    subparsers.add_parser("status", help="Show pairing status")
 
     # Config command
-    config_parser = subparsers.add_parser('config', help='Show/edit configuration')
-    config_parser.add_argument('--show', action='store_true', help='Show current configuration')
-    config_parser.add_argument('--reset', action='store_true', help='Reset to default configuration')
-    config_parser.add_argument('--set', nargs=2, metavar=('KEY', 'VALUE'), help='Set a configuration value')
+    config_parser = subparsers.add_parser("config", help="Show/edit configuration")
+    config_parser.add_argument("--show", action="store_true", help="Show current configuration")
+    config_parser.add_argument(
+        "--reset", action="store_true", help="Reset to default configuration"
+    )
+    config_parser.add_argument(
+        "--set", nargs=2, metavar=("KEY", "VALUE"), help="Set a configuration value"
+    )
 
     args = parser.parse_args()
 
     # Default to start if no command
     if args.command is None:
-        args.command = 'start'
+        args.command = "start"
         args.peer = None
         args.port = config.PORT
         args.verbose = False
         args.no_security = False
 
     # Route to command handler
-    if args.command == 'start':
+    if args.command == "start":
         cmd_start(args)
-    elif args.command == 'stop':
+    elif args.command == "drawer":
+        cmd_drawer(args)
+    elif args.command == "stop":
         cmd_stop(args)
-    elif args.command == 'pair':
+    elif args.command == "pair":
         cmd_pair(args)
-    elif args.command == 'join':
+    elif args.command == "join":
         cmd_join(args)
-    elif args.command == 'unpair':
+    elif args.command == "unpair":
         cmd_unpair(args)
-    elif args.command == 'status':
+    elif args.command == "status":
         cmd_status(args)
-    elif args.command == 'config':
+    elif args.command == "config":
         cmd_config(args)
     else:
         parser.print_help()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -33,6 +33,7 @@ dependencies = [
     "zeroconf>=0.131.0",        # mDNS peer discovery
     "Pillow>=10.0.0",           # Image clipboard support
     "cryptography>=41.0.0",     # AES-256-GCM encryption
+    "PySide6>=6.6.0",           # Drawer desktop app UI
 ]
 
 [project.optional-dependencies]
