@@ -33,7 +33,6 @@ MANIFEST
 
 # PyInstaller
 *.manifest
-*.spec
 
 # pytest
 .pytest_cache/
