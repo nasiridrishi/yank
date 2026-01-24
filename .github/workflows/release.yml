@@ -1,0 +1,100 @@
+name: Build Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact_name: yank
+            output_name: yank-macos
+            extras: macos
+          - os: windows-latest
+            artifact_name: yank.exe
+            output_name: yank-windows.exe
+            extras: windows
+          - os: ubuntu-latest
+            artifact_name: yank
+            output_name: yank-linux
+            extras: linux
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libgirepository1.0-dev \
+            libcairo2-dev \
+            gir1.2-gtk-3.0 \
+            python3-gi \
+            python3-gi-cairo
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install pyinstaller
+          pip install ".[${{ matrix.extras }}]"
+
+      - name: Build executable with PyInstaller
+        run: pyinstaller yank.spec --clean
+
+      - name: Rename artifact (Unix)
+        if: runner.os != 'Windows'
+        run: mv dist/${{ matrix.artifact_name }} dist/${{ matrix.output_name }}
+
+      - name: Rename artifact (Windows)
+        if: runner.os == 'Windows'
+        run: move dist\${{ matrix.artifact_name }} dist\${{ matrix.output_name }}
+        shell: cmd
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output_name }}
+          path: dist/${{ matrix.output_name }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/yank-macos/yank-macos
+            artifacts/yank-windows.exe/yank-windows.exe
+            artifacts/yank-linux/yank-linux
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref, '-') }}
