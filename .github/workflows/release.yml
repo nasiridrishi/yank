@@ -78,34 +78,11 @@ jobs:
           if-no-files-found: error
 
   release:
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Get version info
-        id: version
-        run: |
-          # Extract version from pyproject.toml
-          VERSION=$(grep -m1 'version = ' pyproject.toml | cut -d'"' -f2)
-          SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
-
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            # Tag push - use tag name
-            TAG_NAME="${GITHUB_REF#refs/tags/}"
-            echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
-            echo "release_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
-            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
-          else
-            # Master push - create version tag with short SHA
-            TAG_NAME="v${VERSION}-${SHORT_SHA}"
-            echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
-            echo "release_name=v${VERSION} (${SHORT_SHA})" >> "$GITHUB_OUTPUT"
-            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -117,12 +94,10 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.tag_name }}
-          name: ${{ steps.version.outputs.release_name }}
           files: |
             artifacts/yank-macos/yank-macos
             artifacts/yank-windows.exe/yank-windows.exe
             artifacts/yank-linux/yank-linux
           generate_release_notes: true
           draft: false
-          prerelease: ${{ steps.version.outputs.is_prerelease == 'true' }}
+          prerelease: false
