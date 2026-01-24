@@ -307,15 +307,12 @@ class WindowsClipboardMonitor:
             if bit_count == 32:
                 img = Image.frombytes('RGBA', (width, height), pixel_data, 'raw', 'BGRA')
             elif bit_count == 24:
-                # BGR to RGB
-                row_size = ((width * 3 + 3) // 4) * 4  # Rows are padded to 4 bytes
-                img = Image.new('RGB', (width, height))
-                for y in range(height):
-                    row_start = y * row_size
-                    for x in range(width):
-                        pixel_start = row_start + x * 3
-                        b, g, r = pixel_data[pixel_start:pixel_start+3]
-                        img.putpixel((x, y if not flip else height - 1 - y), (r, g, b))
+                # Use PIL's raw decoder for fast BGR to RGB conversion
+                # Rows are padded to 4 bytes in DIB format
+                row_size = ((width * 3 + 3) // 4) * 4
+                # PIL can handle padded rows with the raw decoder's stride parameter
+                img = Image.frombytes('RGB', (width, height), pixel_data, 'raw', 'BGR', row_size, -1 if flip else 1)
+                flip = False  # Already handled by stride direction
             else:
                 # For other bit depths, use a simpler approach
                 # Create BMP in memory and let PIL handle it

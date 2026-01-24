@@ -110,6 +110,7 @@ class TransferManager:
         self._active_transfers: Dict[str, threading.Event] = {}
         self._checkpoints: Dict[str, TransferCheckpoint] = {}
         self._lock = threading.Lock()
+        self._last_save_time = time.time()
 
         # Callbacks
         self.on_transfer_cancelled: Optional[Callable[[str], None]] = None
@@ -229,9 +230,11 @@ class TransferManager:
                 cp.last_chunk_index = chunk_index
                 cp.updated_at = time.time()
 
-                # Periodically save (every 10 chunks or 5 seconds)
-                if chunk_index % 10 == 0:
+                # Periodically save (every 10 chunks OR every 5 seconds)
+                time_since_save = cp.updated_at - self._last_save_time
+                if chunk_index % 10 == 0 or time_since_save >= 5.0:
                     self._save_checkpoints()
+                    self._last_save_time = cp.updated_at
 
     def complete_transfer(self, transfer_id: str):
         """Mark a transfer as completed"""
@@ -366,3 +369,35 @@ def get_transfer_manager(checkpoint_dir: Optional[Path] = None) -> TransferManag
     if _manager is None:
         _manager = TransferManager(checkpoint_dir=checkpoint_dir)
     return _manager
+
+
+def shutdown_transfer_manager():
+    """
+    Shutdown the global transfer manager.
+
+    - Cancels all active transfers
+    - Saves final checkpoint state
+    - Clears the global instance
+
+    Call this on application exit.
+    """
+    global _manager
+    if _manager is None:
+        return
+
+    with _manager._lock:
+        # Cancel all active transfers
+        for transfer_id in list(_manager._active_transfers.keys()):
+            _manager._active_transfers[transfer_id].set()
+            if transfer_id in _manager._checkpoints:
+                cp = _manager._checkpoints[transfer_id]
+                cp.state = TransferState.PAUSED.value
+                cp.error_message = "Application shutdown"
+                cp.updated_at = time.time()
+
+        # Save final state
+        _manager._save_checkpoints()
+
+        logger.info("Transfer manager shutdown complete")
+
+    _manager = None

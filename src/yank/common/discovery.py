@@ -3,15 +3,23 @@ Peer discovery using mDNS/Zeroconf (Bonjour)
 
 Allows automatic discovery of clipboard-sync peers on the LAN
 """
+import os
 import socket
 import logging
 import threading
-from typing import Optional, Callable, Dict
+import time
+from typing import Optional, Callable, Dict, Tuple
 from zeroconf import ServiceBrowser, ServiceInfo, Zeroconf, ServiceStateChange
 
 from yank import config
 
 logger = logging.getLogger(__name__)
+
+# Environment variable for manual peer IP fallback
+PEER_IP_ENV_VAR = "YANK_PEER_IP"
+
+# Peer cache TTL in seconds
+PEER_CACHE_TTL = 60.0
 
 
 class PeerDiscovery:
@@ -23,7 +31,7 @@ class PeerDiscovery:
                  on_peer_lost: Optional[Callable[[str], None]] = None):
         """
         Initialize peer discovery
-        
+
         Args:
             on_peer_found: Callback when a peer is discovered (ip, port)
             on_peer_lost: Callback when a peer disappears (name)
@@ -34,8 +42,10 @@ class PeerDiscovery:
         self.on_peer_found = on_peer_found
         self.on_peer_lost = on_peer_lost
         self.discovered_peers: Dict[str, tuple] = {}  # name -> (ip, port)
+        self._peer_timestamps: Dict[str, float] = {}  # name -> discovery time (for TTL)
         self._running = False
         self._lock = threading.Lock()
+        self._peer_found_event = threading.Event()  # For blocking get_first_peer
     
     def _get_local_ip(self) -> str:
         """Get the local IP address"""
@@ -63,21 +73,25 @@ class PeerDiscovery:
         """Handle a discovered peer"""
         if not info.addresses:
             return
-        
+
         # Get IP and port
         ip = socket.inet_ntoa(info.addresses[0])
         port = info.port
-        
+
         # Skip if it's us
         local_ip = self._get_local_ip()
         if ip == local_ip:
             return
-        
+
         with self._lock:
-            if name not in self.discovered_peers:
-                self.discovered_peers[name] = (ip, port)
+            is_new = name not in self.discovered_peers
+            self.discovered_peers[name] = (ip, port)
+            self._peer_timestamps[name] = time.time()
+
+            if is_new:
                 logger.info(f"Discovered peer: {name} at {ip}:{port}")
-                
+                self._peer_found_event.set()  # Signal waiting threads
+
                 if self.on_peer_found:
                     self.on_peer_found(ip, port)
     
@@ -150,16 +164,88 @@ class PeerDiscovery:
         logger.info("Peer discovery stopped")
     
     def get_peers(self) -> Dict[str, tuple]:
-        """Get currently discovered peers"""
+        """Get currently discovered peers (with cache cleanup)"""
+        self._cleanup_stale_peers()
         with self._lock:
             return dict(self.discovered_peers)
-    
-    def get_first_peer(self) -> Optional[tuple]:
-        """Get the first discovered peer (ip, port)"""
+
+    def _cleanup_stale_peers(self):
+        """Remove peers that haven't been seen recently"""
+        now = time.time()
+        with self._lock:
+            stale = [
+                name for name, ts in self._peer_timestamps.items()
+                if now - ts > PEER_CACHE_TTL
+            ]
+            for name in stale:
+                if name in self.discovered_peers:
+                    del self.discovered_peers[name]
+                del self._peer_timestamps[name]
+                logger.debug(f"Expired stale peer: {name}")
+
+    def get_first_peer(self, timeout: float = 5.0) -> Optional[Tuple[str, int]]:
+        """
+        Get the first discovered peer (ip, port).
+
+        Args:
+            timeout: Maximum seconds to wait for a peer (default 5s).
+                     Set to 0 for non-blocking check.
+
+        Returns:
+            Tuple of (ip, port) or None if no peer found
+        """
+        # First check for manual override via environment variable
+        manual_peer = self._get_manual_peer()
+        if manual_peer:
+            return manual_peer
+
+        # Clean up stale peers
+        self._cleanup_stale_peers()
+
+        # Check existing peers
         with self._lock:
             if self.discovered_peers:
                 return list(self.discovered_peers.values())[0]
+
+        # If no timeout, return immediately
+        if timeout <= 0:
+            return None
+
+        # Wait for a peer to be discovered
+        self._peer_found_event.clear()
+        if self._peer_found_event.wait(timeout=timeout):
+            with self._lock:
+                if self.discovered_peers:
+                    return list(self.discovered_peers.values())[0]
+
+        logger.debug(f"No peer found within {timeout}s timeout")
         return None
+
+    def _get_manual_peer(self) -> Optional[Tuple[str, int]]:
+        """
+        Get peer from YANK_PEER_IP environment variable.
+
+        Format: IP or IP:PORT (default port is config.PORT)
+        """
+        peer_ip = os.environ.get(PEER_IP_ENV_VAR)
+        if not peer_ip:
+            return None
+
+        try:
+            if ':' in peer_ip:
+                ip, port_str = peer_ip.rsplit(':', 1)
+                port = int(port_str)
+            else:
+                ip = peer_ip
+                port = config.PORT
+
+            # Basic validation
+            socket.inet_aton(ip)  # Validates IP format
+            logger.info(f"Using manual peer from {PEER_IP_ENV_VAR}: {ip}:{port}")
+            return (ip, port)
+        except (ValueError, socket.error) as e:
+            logger.warning(f"Invalid {PEER_IP_ENV_VAR} value '{peer_ip}': {e}")
+            return None
 
 
 # Singleton instance for easy access

@@ -62,6 +62,54 @@ class SyncConfig:
     def to_dict(self) -> dict:
         return asdict(self)
 
+    def validate(self) -> list:
+        """
+        Validate configuration values.
+
+        Returns:
+            List of error messages (empty if valid)
+        """
+        errors = []
+
+        # Type checks
+        bool_fields = ['sync_files', 'sync_text', 'sync_images', 'auto_discovery', 'show_notifications']
+        for field in bool_fields:
+            if not isinstance(getattr(self, field), bool):
+                errors.append(f"{field} must be a boolean")
+
+        int_fields = ['max_text_size_mb', 'max_file_size_mb', 'max_total_size_mb', 'min_text_length']
+        for field in int_fields:
+            val = getattr(self, field)
+            if not isinstance(val, (int, float)):
+                errors.append(f"{field} must be a number")
+
+        # Value range checks
+        if self.max_file_size_mb <= 0:
+            errors.append("max_file_size_mb must be greater than 0")
+
+        if self.max_total_size_mb <= 0:
+            errors.append("max_total_size_mb must be greater than 0")
+
+        if self.max_text_size_mb <= 0:
+            errors.append("max_text_size_mb must be greater than 0")
+
+        if self.min_text_length < 0:
+            errors.append("min_text_length cannot be negative")
+
+        if not isinstance(self.text_sync_delay, (int, float)):
+            errors.append("text_sync_delay must be a number")
+        elif self.text_sync_delay < 0 or self.text_sync_delay > 10:
+            errors.append("text_sync_delay must be between 0 and 10 seconds")
+
+        if not isinstance(self.ignored_extensions, list):
+            errors.append("ignored_extensions must be a list")
+
+        # Logical consistency checks
+        if self.max_file_size_mb > self.max_total_size_mb:
+            errors.append("max_file_size_mb cannot exceed max_total_size_mb")
+
+        return errors
+
     @classmethod
     def from_dict(cls, data: dict) -> 'SyncConfig':
         """Create config from dict, using defaults for missing keys"""
@@ -97,6 +145,17 @@ class ConfigManager:
                     data = json.load(f)
                 self._config = SyncConfig.from_dict(data)
                 logger.info(f"Loaded config from {path}")
+
+                # Validate and warn about errors
+                errors = self._config.validate()
+                if errors:
+                    for error in errors:
+                        logger.warning(f"Config validation: {error}")
+                    logger.warning("Using default values for invalid settings")
+                    # Reset invalid values to defaults
+                    self._fix_invalid_values()
+                    self.save(path)
+
             except Exception as e:
                 logger.warning(f"Failed to load config: {e}, using defaults")
                 self._config = SyncConfig()
@@ -107,6 +166,34 @@ class ConfigManager:
             self.save(path)
 
         return self._config
+
+    def _fix_invalid_values(self):
+        """Reset invalid values to defaults"""
+        defaults = SyncConfig()
+
+        # Fix numeric ranges
+        if self._config.max_file_size_mb <= 0:
+            self._config.max_file_size_mb = defaults.max_file_size_mb
+
+        if self._config.max_total_size_mb <= 0:
+            self._config.max_total_size_mb = defaults.max_total_size_mb
+
+        if self._config.max_text_size_mb <= 0:
+            self._config.max_text_size_mb = defaults.max_text_size_mb
+
+        if self._config.min_text_length < 0:
+            self._config.min_text_length = defaults.min_text_length
+
+        if not isinstance(self._config.text_sync_delay, (int, float)) or \
+           self._config.text_sync_delay < 0 or self._config.text_sync_delay > 10:
+            self._config.text_sync_delay = defaults.text_sync_delay
+
+        if not isinstance(self._config.ignored_extensions, list):
+            self._config.ignored_extensions = defaults.ignored_extensions
+
+        # Fix logical consistency
+        if self._config.max_file_size_mb > self._config.max_total_size_mb:
+            self._config.max_file_size_mb = self._config.max_total_size_mb
 
     def save(self, config_path: Path = None) -> bool:
         """Save configuration to file"""
@@ -133,7 +220,20 @@ class ConfigManager:
             logger.error(f"Unknown config key: {key}")
             return False
 
+        # Store old value in case validation fails
+        old_value = getattr(self._config, key)
         setattr(self._config, key, value)
+
+        # Validate
+        errors = self._config.validate()
+        if errors:
+            # Check if this key caused any errors
+            key_errors = [e for e in errors if key in e.lower()]
+            if key_errors:
+                logger.error(f"Invalid value for {key}: {key_errors[0]}")
+                setattr(self._config, key, old_value)  # Restore old value
+                return False
+
         return self.save()
 
     def reset(self) -> SyncConfig:

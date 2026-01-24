@@ -109,7 +109,21 @@ class SyncAgent:
 
         # Active file writers for receiving chunks
         self._active_writers: Dict[str, Dict[int, ChunkedFileWriter]] = {}  # transfer_id -> {file_index -> writer}
-    
+        self._writers_lock = threading.RLock()  # Protects _active_writers access
+
+    def _safe_close_socket(self, sock: socket.socket):
+        """Safely close a socket, handling any errors"""
+        if not sock:
+            return
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass  # Socket may already be disconnected
+        try:
+            sock.close()
+        except OSError:
+            pass
+
     def start(self):
         """Start the sync agent (server + discovery)"""
         if self._running:
@@ -138,11 +152,7 @@ class SyncAgent:
         stop_discovery()
         
         # Stop server
-        if self._server_socket:
-            try:
-                self._server_socket.close()
-            except:
-                pass
+        self._safe_close_socket(self._server_socket)
         
         if self._server_thread:
             self._server_thread.join(timeout=2)
@@ -485,7 +495,7 @@ class SyncAgent:
                         break
 
             finally:
-                sock.close()
+                self._safe_close_socket(sock)
 
         except socket.timeout:
             logger.error("Timeout sending files to peer")
@@ -589,7 +599,7 @@ class SyncAgent:
                         break
 
             finally:
-                sock.close()
+                self._safe_close_socket(sock)
 
         except socket.timeout:
             logger.error("Timeout sending text to peer")
@@ -682,6 +692,7 @@ class SyncAgent:
         if not peer_ip:
             return False
 
+        sock = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(5.0)
@@ -689,7 +700,6 @@ class SyncAgent:
             sock.sendall(MessageBuilder.build_ping())
 
             data = sock.recv(config.BUFFER_SIZE)
-            sock.close()
 
             parser = MessageParser()
             parser.feed(data)
@@ -700,6 +710,8 @@ class SyncAgent:
 
         except Exception as e:
             logger.debug(f"Ping failed: {e}")
+        finally:
+            self._safe_close_socket(sock)
 
         return False
 
@@ -778,7 +790,7 @@ class SyncAgent:
                 return transfer_id
 
             finally:
-                sock.close()
+                self._safe_close_socket(sock)
 
         except Exception as e:
             logger.error(f"Error announcing files: {e}")
@@ -1040,11 +1052,7 @@ class SyncAgent:
             return None
 
         finally:
-            if sock:
-                try:
-                    sock.close()
-                except:
-                    pass
+            self._safe_close_socket(sock)
 
     def cancel_transfer(self, transfer_id: str, reason: str = "User cancelled") -> bool:
         """
@@ -1074,14 +1082,16 @@ class SyncAgent:
                 if peer_ip:
                     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     sock.settimeout(5.0)
-                    sock.connect((peer_ip, peer_port))
+                    try:
+                        sock.connect((peer_ip, peer_port))
 
-                    if self.require_pairing and encryption_key:
-                        self._authenticate_with_server(sock, encryption_key)
+                        if self.require_pairing and encryption_key:
+                            self._authenticate_with_server(sock, encryption_key)
 
-                    cancel_msg = MessageBuilder.build_transfer_cancel(transfer_id, reason, encryption_key)
-                    sock.sendall(cancel_msg)
-                    sock.close()
+                        cancel_msg = MessageBuilder.build_transfer_cancel(transfer_id, reason, encryption_key)
+                        sock.sendall(cancel_msg)
+                    finally:
+                        self._safe_close_socket(sock)
             except Exception as e:
                 logger.debug(f"Could not notify peer of cancellation: {e}")
 
@@ -1243,11 +1253,7 @@ class SyncAgent:
             return None
 
         finally:
-            if sock:
-                try:
-                    sock.close()
-                except:
-                    pass
+            self._safe_close_socket(sock)
 
     def _handle_file_announce(self, client_socket: socket.socket, payload: bytes, key: bytes = None):
         """Handle FILE_ANNOUNCE - peer is offering files"""
@@ -1329,50 +1335,52 @@ class SyncAgent:
 
     def _handle_file_chunk(self, client_socket: socket.socket, payload: bytes, key: bytes = None):
         """Handle FILE_CHUNK - receiving a chunk of file data"""
+        transfer_id = None  # Initialize for safe access in except block
         try:
             chunk_info, chunk_data = MessageParser.parse_file_chunk(payload)
             transfer_id = chunk_info.transfer_id
             file_index = chunk_info.file_index
 
-            # Get or create writer for this file
-            if transfer_id not in self._active_writers:
-                self._active_writers[transfer_id] = {}
+            with self._writers_lock:
+                # Get or create writer for this file
+                if transfer_id not in self._active_writers:
+                    self._active_writers[transfer_id] = {}
 
-            writers = self._active_writers[transfer_id]
+                writers = self._active_writers[transfer_id]
 
-            if file_index not in writers:
-                # Need to get file info from registry
-                transfer_info = self._registry.get_transfer(transfer_id)
-                if not transfer_info:
-                    logger.error(f"No transfer info for {transfer_id}")
-                    return
+                if file_index not in writers:
+                    # Need to get file info from registry
+                    transfer_info = self._registry.get_transfer(transfer_id)
+                    if not transfer_info:
+                        logger.error(f"No transfer info for {transfer_id}")
+                        return
 
-                file_info = None
-                for f in transfer_info.metadata.files:
-                    if f.file_index == file_index:
-                        file_info = f
-                        break
+                    file_info = None
+                    for f in transfer_info.metadata.files:
+                        if f.file_index == file_index:
+                            file_info = f
+                            break
 
-                if not file_info:
-                    logger.error(f"No file info for index {file_index}")
-                    return
+                    if not file_info:
+                        logger.error(f"No file info for index {file_index}")
+                        return
 
-                # Create writer
-                dest_dir = transfer_info.dest_dir or config.TEMP_DIR
-                if file_info.relative_path and '/' in file_info.relative_path:
-                    file_dest = dest_dir / file_info.relative_path
-                else:
-                    file_dest = dest_dir / file_info.name
+                    # Create writer
+                    dest_dir = transfer_info.dest_dir or config.TEMP_DIR
+                    if file_info.relative_path and '/' in file_info.relative_path:
+                        file_dest = dest_dir / file_info.relative_path
+                    else:
+                        file_dest = dest_dir / file_info.name
 
-                writers[file_index] = ChunkedFileWriter(
-                    file_dest,
-                    file_info.size,
-                    file_info.checksum
-                )
+                    writers[file_index] = ChunkedFileWriter(
+                        file_dest,
+                        file_info.size,
+                        file_info.checksum
+                    )
 
-            writer = writers[file_index]
+                writer = writers[file_index]
 
-            # Write chunk
+            # Write chunk (outside lock to avoid holding lock during I/O)
             if not writer.write_chunk(chunk_info.offset, chunk_data, chunk_info.checksum):
                 logger.error(f"Failed to write chunk at offset {chunk_info.offset}")
                 return
@@ -1391,13 +1399,27 @@ class SyncAgent:
                 try:
                     final_path = writer.finalize()
                     self._registry.add_downloaded_file(transfer_id, final_path)
-                    del writers[file_index]
+                    with self._writers_lock:
+                        if transfer_id in self._active_writers and file_index in self._active_writers[transfer_id]:
+                            del self._active_writers[transfer_id][file_index]
                     logger.info(f"File complete: {final_path}")
                 except Exception as e:
                     logger.error(f"Error finalizing file: {e}")
+                    # Clean up temp file on finalize failure
+                    writer.cleanup()
+                    with self._writers_lock:
+                        if transfer_id in self._active_writers and file_index in self._active_writers[transfer_id]:
+                            del self._active_writers[transfer_id][file_index]
 
         except Exception as e:
             logger.error(f"Error handling file chunk: {e}")
+            # Clean up any writers for this transfer on error
+            if transfer_id is not None:
+                with self._writers_lock:
+                    if transfer_id in self._active_writers:
+                        for writer in self._active_writers[transfer_id].values():
+                            writer.cleanup()
+                        del self._active_writers[transfer_id]
 
     def _handle_transfer_complete(self, client_socket: socket.socket, payload: bytes, key: bytes = None):
         """Handle TRANSFER_COMPLETE"""
@@ -1409,8 +1431,9 @@ class SyncAgent:
             logger.info(f"Transfer completed by peer: {transfer_id}")
 
             # Clean up writers
-            if transfer_id in self._active_writers:
-                del self._active_writers[transfer_id]
+            with self._writers_lock:
+                if transfer_id in self._active_writers:
+                    del self._active_writers[transfer_id]
 
         except Exception as e:
             logger.error(f"Error handling transfer complete: {e}")
@@ -1426,10 +1449,11 @@ class SyncAgent:
             logger.info(f"Transfer cancelled: {transfer_id} - {reason}")
 
             # Clean up writers
-            if transfer_id in self._active_writers:
-                for writer in self._active_writers[transfer_id].values():
-                    writer.cleanup()
-                del self._active_writers[transfer_id]
+            with self._writers_lock:
+                if transfer_id in self._active_writers:
+                    for writer in self._active_writers[transfer_id].values():
+                        writer.cleanup()
+                    del self._active_writers[transfer_id]
 
         except Exception as e:
             logger.error(f"Error handling transfer cancel: {e}")
@@ -1445,10 +1469,11 @@ class SyncAgent:
             logger.error(f"Transfer error: {transfer_id} - {error}")
 
             # Clean up writers
-            if transfer_id in self._active_writers:
-                for writer in self._active_writers[transfer_id].values():
-                    writer.cleanup()
-                del self._active_writers[transfer_id]
+            with self._writers_lock:
+                if transfer_id in self._active_writers:
+                    for writer in self._active_writers[transfer_id].values():
+                        writer.cleanup()
+                    del self._active_writers[transfer_id]
 
         except Exception as e:
             logger.error(f"Error handling transfer error: {e}")

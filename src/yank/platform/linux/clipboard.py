@@ -3,6 +3,7 @@ Linux Clipboard Monitor using GTK3
 
 Works on both X11 and Wayland display servers
 """
+import hashlib
 import logging
 import time
 import threading
@@ -94,7 +95,10 @@ class LinuxClipboardMonitor:
 
         context = GLib.MainContext.default()
         while self._running:
-            context.iteration(True)
+            # Use non-blocking iteration to respect poll_interval contract
+            had_events = context.iteration(False)
+            if not had_events:
+                time.sleep(0.05)  # Short sleep when no events to avoid busy-waiting
 
     def _check_clipboard_timeout(self):
         """Called periodically by GTK timeout"""
@@ -145,8 +149,9 @@ class LinuxClipboardMonitor:
         if not file_paths:
             return False
 
-        # Check if this is new content
-        content_hash = hash(tuple(str(p) for p in file_paths))
+        # Check if this is new content (use MD5 for deterministic hashing across sessions)
+        content = '|'.join(sorted(str(p) for p in file_paths))
+        content_hash = hashlib.md5(content.encode()).hexdigest()
         if content_hash == self._last_content_hash:
             return False
 
@@ -171,8 +176,9 @@ class LinuxClipboardMonitor:
             logger.warning("Failed to convert image to PNG")
             return False
 
-        # Check if this is new content
-        content_hash = hash(png_bytes[:1024] if len(png_bytes) > 1024 else png_bytes)
+        # Check if this is new content (use MD5 for deterministic hashing)
+        sample = png_bytes[:1024] if len(png_bytes) > 1024 else png_bytes
+        content_hash = hashlib.md5(sample).hexdigest()
         if content_hash == self._last_content_hash:
             return False
 
@@ -191,8 +197,8 @@ class LinuxClipboardMonitor:
         if not text or not text.strip():
             return False
 
-        # Check if this is new content
-        content_hash = hash(text)
+        # Check if this is new content (use MD5 for deterministic hashing)
+        content_hash = hashlib.md5(text.encode()).hexdigest()
         if content_hash == self._last_content_hash:
             return False
 

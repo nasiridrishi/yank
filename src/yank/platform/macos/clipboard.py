@@ -143,10 +143,17 @@ class MacClipboardMonitor:
         if current_count == self._last_change_count:
             return
 
-        self._last_change_count = current_count
-
         # Get available types
         types = self._pasteboard.types()
+
+        # Re-check change count - if clipboard changed during read, skip this cycle
+        # to avoid processing inconsistent data
+        post_read_count = self._pasteboard.changeCount()
+        if post_read_count != current_count:
+            self._last_change_count = post_read_count
+            return
+
+        self._last_change_count = current_count
 
         # Priority: Files first, then images, then text
         if self.sync_files and NSFilenamesPboardType in types:

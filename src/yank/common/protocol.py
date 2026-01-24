@@ -24,6 +24,10 @@ import io
 
 logger = logging.getLogger(__name__)
 
+# Security limits
+MAX_MESSAGE_SIZE = 10 * 1024 * 1024 + 1024  # 10MB + overhead for message content
+MAX_BUFFER_SIZE = 20 * 1024 * 1024  # 20MB max buffer to prevent memory exhaustion
+
 
 class MessageType:
     """Message types for the protocol"""
@@ -428,6 +432,30 @@ class MessageBuilder:
         return message
 
 
+def _safe_json_parse(data: bytes, expected_keys: list = None) -> tuple:
+    """
+    Safely parse JSON data with error handling.
+
+    Args:
+        data: Bytes to parse as JSON
+        expected_keys: Optional list of keys that must be present
+
+    Returns:
+        (success: bool, result: dict or error_message: str)
+    """
+    try:
+        result = json.loads(data.decode('utf-8'))
+        if expected_keys:
+            missing = [k for k in expected_keys if k not in result]
+            if missing:
+                return (False, f"Missing keys: {missing}")
+        return (True, result)
+    except UnicodeDecodeError as e:
+        return (False, f"Invalid UTF-8 encoding: {e}")
+    except json.JSONDecodeError as e:
+        return (False, f"Invalid JSON: {e}")
+
+
 class MessageParser:
     """Parse protocol messages"""
 
@@ -439,9 +467,19 @@ class MessageParser:
         """Set the encryption key for decryption"""
         self.key = key
 
-    def feed(self, data: bytes):
-        """Feed data into the parser buffer"""
+    def feed(self, data: bytes) -> bool:
+        """
+        Feed data into the parser buffer.
+
+        Returns:
+            True if data was accepted, False if buffer overflow would occur
+        """
+        if len(self.buffer) + len(data) > MAX_BUFFER_SIZE:
+            logger.error(f"Buffer overflow prevented: {len(self.buffer)} + {len(data)} > {MAX_BUFFER_SIZE}")
+            self.buffer.clear()
+            return False
         self.buffer.extend(data)
+        return True
 
     def parse_one(self) -> Optional[tuple]:
         """
@@ -456,6 +494,12 @@ class MessageParser:
         # Read message length
         msg_len = struct.unpack('>I', self.buffer[:4])[0]
 
+        # Validate message length to prevent DoS
+        if msg_len > MAX_MESSAGE_SIZE:
+            logger.error(f"Message too large: {msg_len} bytes (max: {MAX_MESSAGE_SIZE})")
+            self.buffer.clear()
+            return (MessageType.ERROR, b"Message exceeds maximum size")
+
         # Check if we have the full message
         total_needed = 4 + msg_len
         if len(self.buffer) < total_needed:
@@ -465,15 +509,18 @@ class MessageParser:
         first_byte = self.buffer[4]
 
         if first_byte == MessageFlags.ENCRYPTED:
+            # Check for encryption key BEFORE consuming buffer
+            if not self.key:
+                logger.warning("Received encrypted message but no key set")
+                # Still consume the message to avoid buffer buildup
+                del self.buffer[:total_needed]
+                return (MessageType.ERROR, b"No encryption key")
+
             # Encrypted message
             encrypted_data = bytes(self.buffer[5:total_needed])
 
-            # Remove from buffer first
+            # Remove from buffer
             del self.buffer[:total_needed]
-
-            if not self.key:
-                logger.warning("Received encrypted message but no key set")
-                return (MessageType.ERROR, b"No encryption key")
 
             try:
                 from yank.common.crypto import decrypt
@@ -503,30 +550,39 @@ class MessageParser:
     def parse_file_transfer(payload: bytes) -> tuple:
         """
         Parse a file transfer payload
-        
+
         Returns: (TransferMetadata, file_data)
+        Raises: ValueError if parsing fails
         """
         # First 4 bytes are metadata length
         metadata_len = struct.unpack('>I', payload[:4])[0]
-        
+
         # Extract metadata JSON
-        metadata_json = payload[4:4+metadata_len].decode('utf-8')
-        metadata = TransferMetadata.from_dict(json.loads(metadata_json))
-        
+        success, result = _safe_json_parse(payload[4:4+metadata_len])
+        if not success:
+            raise ValueError(f"Failed to parse file transfer metadata: {result}")
+        metadata = TransferMetadata.from_dict(result)
+
         # Rest is file data
         file_data = payload[4+metadata_len:]
-        
+
         return (metadata, file_data)
-    
+
     @staticmethod
     def parse_ack(payload: bytes) -> dict:
         """Parse an acknowledgment payload"""
-        return json.loads(payload.decode('utf-8'))
-    
+        success, result = _safe_json_parse(payload, expected_keys=['success'])
+        if not success:
+            raise ValueError(f"Failed to parse ack: {result}")
+        return result
+
     @staticmethod
     def parse_error(payload: bytes) -> str:
         """Parse an error payload"""
-        return payload.decode('utf-8')
+        try:
+            return payload.decode('utf-8')
+        except UnicodeDecodeError:
+            return payload.decode('utf-8', errors='replace')
 
     @staticmethod
     def parse_text_transfer(payload: bytes) -> str:
@@ -534,29 +590,41 @@ class MessageParser:
         Parse a text transfer payload
 
         Returns: The text string
+        Raises: ValueError if parsing fails
         """
         # First 4 bytes are text length
         text_len = struct.unpack('>I', payload[:4])[0]
         text_data = payload[4:4 + text_len]
-        return text_data.decode('utf-8')
+        try:
+            return text_data.decode('utf-8')
+        except UnicodeDecodeError as e:
+            raise ValueError(f"Failed to decode text: {e}")
 
     @staticmethod
     def parse_text_ack(payload: bytes) -> dict:
         """Parse a text acknowledgment payload"""
-        return json.loads(payload.decode('utf-8'))
+        success, result = _safe_json_parse(payload, expected_keys=['success'])
+        if not success:
+            raise ValueError(f"Failed to parse text ack: {result}")
+        return result
 
     # ========== Lazy Transfer Parsers ==========
 
     @staticmethod
     def parse_file_announce(payload: bytes) -> TransferMetadata:
         """Parse a file announcement payload"""
-        metadata_dict = json.loads(payload.decode('utf-8'))
-        return TransferMetadata.from_dict(metadata_dict)
+        success, result = _safe_json_parse(payload)
+        if not success:
+            raise ValueError(f"Failed to parse file announce: {result}")
+        return TransferMetadata.from_dict(result)
 
     @staticmethod
     def parse_file_request(payload: bytes) -> dict:
         """Parse a file request payload"""
-        return json.loads(payload.decode('utf-8'))
+        success, result = _safe_json_parse(payload, expected_keys=['transfer_id', 'file_index'])
+        if not success:
+            raise ValueError(f"Failed to parse file request: {result}")
+        return result
 
     @staticmethod
     def parse_file_chunk(payload: bytes) -> tuple:
@@ -564,13 +632,16 @@ class MessageParser:
         Parse a file chunk payload
 
         Returns: (ChunkInfo, chunk_data)
+        Raises: ValueError if parsing fails
         """
         # First 4 bytes are chunk info JSON length
         chunk_info_len = struct.unpack('>I', payload[:4])[0]
 
         # Extract chunk info JSON
-        chunk_json = payload[4:4 + chunk_info_len].decode('utf-8')
-        chunk_info = ChunkInfo.from_dict(json.loads(chunk_json))
+        success, result = _safe_json_parse(payload[4:4 + chunk_info_len])
+        if not success:
+            raise ValueError(f"Failed to parse chunk info: {result}")
+        chunk_info = ChunkInfo.from_dict(result)
 
         # Rest is chunk data
         chunk_data = payload[4 + chunk_info_len:]
@@ -580,22 +651,34 @@ class MessageParser:
     @staticmethod
     def parse_file_chunk_ack(payload: bytes) -> dict:
         """Parse a chunk acknowledgment payload"""
-        return json.loads(payload.decode('utf-8'))
+        success, result = _safe_json_parse(payload, expected_keys=['transfer_id', 'file_index', 'chunk_index'])
+        if not success:
+            raise ValueError(f"Failed to parse chunk ack: {result}")
+        return result
 
     @staticmethod
     def parse_transfer_complete(payload: bytes) -> dict:
         """Parse a transfer complete payload"""
-        return json.loads(payload.decode('utf-8'))
+        success, result = _safe_json_parse(payload, expected_keys=['transfer_id'])
+        if not success:
+            raise ValueError(f"Failed to parse transfer complete: {result}")
+        return result
 
     @staticmethod
     def parse_transfer_cancel(payload: bytes) -> dict:
         """Parse a transfer cancel payload"""
-        return json.loads(payload.decode('utf-8'))
+        success, result = _safe_json_parse(payload, expected_keys=['transfer_id'])
+        if not success:
+            raise ValueError(f"Failed to parse transfer cancel: {result}")
+        return result
 
     @staticmethod
     def parse_transfer_error(payload: bytes) -> dict:
         """Parse a transfer error payload"""
-        return json.loads(payload.decode('utf-8'))
+        success, result = _safe_json_parse(payload, expected_keys=['transfer_id'])
+        if not success:
+            raise ValueError(f"Failed to parse transfer error: {result}")
+        return result
 
 
 def pack_files(file_paths: List[Path], base_path: Optional[Path] = None) -> tuple:
