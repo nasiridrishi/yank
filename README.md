@@ -24,8 +24,8 @@ winget install nasiridrishi.Yank
 
 **Linux (apt - Ubuntu/Debian):**
 ```bash
-curl -s https://nasiridrishi.github.io/yank/KEY.gpg | sudo gpg --dearmor -o /usr/share/keyrings/yank.gpg
-echo "deb [signed-by=/usr/share/keyrings/yank.gpg] https://nasiridrishi.github.io/yank stable main" | sudo tee /etc/apt/sources.list.d/yank.list
+curl -fsSL https://nasiridrishi.github.io/yank/gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/yank.gpg
+echo "deb [signed-by=/usr/share/keyrings/yank.gpg] https://nasiridrishi.github.io/yank yank main" | sudo tee /etc/apt/sources.list.d/yank.list
 sudo apt update && sudo apt install yank-clipboard
 ```
 
