@@ -12,47 +12,26 @@ Copy files or text on one machine, instantly paste on the other.
 
 ## Installation
 
-### Download
-
-Download the executable for your platform from [Releases](https://github.com/nasiridrishi/yank/releases):
-
-| Platform | Download |
-|----------|----------|
-| macOS | `yank-macos` |
-| Windows | `yank-windows.exe` |
-| Linux | `yank-linux` |
-
-### Install
-
-**macOS:**
+**macOS (Homebrew):**
 ```bash
-chmod +x yank-macos
-mv yank-macos /usr/local/bin/yank
+brew install nasiridrishi/tap/yank
 ```
 
-**Linux:**
-```bash
-chmod +x yank-linux
-sudo mv yank-linux /usr/local/bin/yank
+**Windows (winget):**
+```powershell
+winget install nasiridrishi.Yank
 ```
 
-**Windows:**
-Move `yank-windows.exe` to a folder in your PATH, or run directly.
-
-### Linux: GTK3 Dependency
-
-Linux requires GTK3 system libraries:
-
+**Linux (apt - Ubuntu/Debian):**
 ```bash
-# Ubuntu/Debian
-sudo apt install libgtk-3-0
-
-# Fedora/RHEL
-sudo dnf install gtk3
-
-# Arch
-sudo pacman -S gtk3
+curl -s https://nasiridrishi.github.io/yank/KEY.gpg | sudo gpg --dearmor -o /usr/share/keyrings/yank.gpg
+echo "deb [signed-by=/usr/share/keyrings/yank.gpg] https://nasiridrishi.github.io/yank stable main" | sudo tee /etc/apt/sources.list.d/yank.list
+sudo apt update && sudo apt install yank-clipboard
 ```
+
+**Manual download:**
+
+Standalone binaries are also available from [Releases](https://github.com/nasiridrishi/yank/releases).
 
 ---
 
