@@ -1,0 +1,12 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0
+PackageIdentifier: nasiridrishi.Yank
+PackageVersion: 0.1.0  # UPDATE: Replace with actual version for first submission
+InstallerType: portable
+Commands:
+  - yank
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/nasiridrishi/yank/releases/download/v0.1.0/yank-windows.exe  # UPDATE: Replace version
+    InstallerSha256: REPLACE_WITH_SHA256  # UPDATE: Compute with `sha256sum yank-windows.exe` or `Get-FileHash`
+ManifestType: installer
+ManifestVersion: 1.6.0

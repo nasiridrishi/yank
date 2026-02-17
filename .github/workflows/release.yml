@@ -140,6 +140,9 @@ jobs:
     needs: release
     runs-on: windows-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Install wingetcreate
         run: iwr https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
 
@@ -151,11 +154,27 @@ jobs:
           $version = $env:TAG_NAME.TrimStart('v')
           $url = "https://github.com/nasiridrishi/yank/releases/download/${env:TAG_NAME}/yank-windows.exe"
 
-          # Try update first (works if package already exists)
+          # Try update first (works if package already exists in winget-pkgs)
           .\wingetcreate.exe update nasiridrishi.Yank -v $version -u $url --submit --token $env:WINGET_TOKEN 2>$null
           if ($LASTEXITCODE -ne 0) {
-            # First submission - create new manifest
-            .\wingetcreate.exe new $url --submit --token $env:WINGET_TOKEN
+            # Package not yet in winget-pkgs - submit pre-built manifests
+            # Download installer to compute SHA256
+            Invoke-WebRequest -Uri $url -OutFile yank-windows.exe
+            $hash = (Get-FileHash yank-windows.exe -Algorithm SHA256).Hash
+
+            # Update manifest files with current version, URL, and hash
+            $files = Get-ChildItem winget/*.yaml
+            foreach ($f in $files) {
+              (Get-Content $f.FullName) `
+                -replace 'PackageVersion:.*', "PackageVersion: $version" `
+                -replace 'InstallerUrl:.*', "InstallerUrl: $url" `
+                -replace 'InstallerSha256:.*', "InstallerSha256: $hash" |
+                Set-Content $f.FullName
+              # Remove comment lines
+              (Get-Content $f.FullName) | Where-Object { $_ -notmatch '^\s*#' } | Set-Content $f.FullName
+            }
+
+            .\wingetcreate.exe submit winget --prtitle "New package: nasiridrishi.Yank version $version" --token $env:WINGET_TOKEN
           }
 
   update-apt-repo:
@@ -170,6 +189,9 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
       - name: Download Linux artifact
         uses: actions/download-artifact@v4
         with:
