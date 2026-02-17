@@ -39,6 +39,7 @@ from yank.common.singleton import ensure_single_instance, release_singleton, get
 from yank.common.user_config import get_config, get_config_manager, print_config, format_size
 from yank.common.syncignore import get_syncignore, filter_files
 from yank.common.chunked_transfer import format_bytes
+from yank.common.service_manager import get_service_manager, ServiceStatus
 
 # Detect OS and import appropriate clipboard module
 PLATFORM = platform.system()
@@ -477,7 +478,7 @@ def cmd_pair(args):
 
     if success:
         print(f"\n[OK] {message}")
-        print(f"\nYou can now run '{RUN_SCRIPT} start' to begin syncing.")
+        _auto_install_and_start_service()
     else:
         print(f"\n[FAILED] {message}")
         sys.exit(1)
@@ -500,7 +501,7 @@ def cmd_join(args):
 
     if success:
         print(f"\n[OK] {message}")
-        print(f"\nYou can now run '{RUN_SCRIPT} start' to begin syncing.")
+        _auto_install_and_start_service()
     else:
         print(f"\n[FAILED] {message}")
         sys.exit(1)
@@ -520,36 +521,47 @@ def cmd_unpair(args):
 
     confirm = input("\nAre you sure you want to unpair? (y/N): ")
     if confirm.lower() == 'y':
+        svc_mgr = get_service_manager()
+        ok, msg = svc_mgr.stop_and_uninstall()
+        if ok:
+            print("[OK] Service stopped and removed")
         manager.clear_pairing()
-        print("\n[OK] Pairing removed.")
+        print("[OK] Pairing removed.")
     else:
         print("\nCancelled.")
 
 
 def cmd_status(args):
-    """Show pairing status"""
+    """Show pairing and service status"""
     manager = get_pairing_manager()
+    svc_mgr = get_service_manager()
+    info = svc_mgr.get_status()
 
-    print(f"\n{'='*50}")
-    print("  Clipboard Sync - Status")
-    print(f"{'='*50}")
-    print(f"\n  This device: {get_device_name()}")
+    # Service status indicator
+    if info.status == ServiceStatus.RUNNING:
+        indicator = "[RUNNING]"
+        status_line = f"Yank is running (PID {info.pid})"
+    elif info.status == ServiceStatus.STOPPED:
+        indicator = "[STOPPED]"
+        status_line = "Yank is not running"
+    elif info.status == ServiceStatus.NOT_INSTALLED:
+        indicator = "[NOT INSTALLED]"
+        status_line = "Service not installed"
+    else:
+        indicator = "[UNKNOWN]"
+        status_line = "Service status unknown"
+
+    print(f"\n{indicator} {status_line}")
 
     if manager.is_paired():
         paired = manager.get_paired_device()
-        print(f"\n  Pairing Status: PAIRED")
-        print(f"  Paired Device:  {paired.device_name}")
-        print(f"  Device ID:      {paired.device_id}")
-        print(f"  Paired At:      {paired.paired_at}")
-        print(f"  Last Seen:      {paired.last_seen or 'Never'}")
-        print(f"\n  Encryption: ENABLED (AES-256-GCM)")
+        print(f"  Paired with: {paired.device_name}")
+        svc_label = "enabled (starts on login)" if info.enabled else "disabled"
+        print(f"  Service: {svc_label}")
+        print(f"  Encryption: AES-256-GCM")
     else:
-        print(f"\n  Pairing Status: NOT PAIRED")
-        print(f"\n  To pair with another device:")
-        print(f"    1. Run '{RUN_SCRIPT} pair' on this device")
-        print(f"    2. Run '{RUN_SCRIPT} join <IP> <PIN>' on the other device")
-
-    print(f"\n{'='*50}\n")
+        print(f"\n  Not paired.")
+        print(f"  Run 'yank pair' to pair with another device.")
 
 
 def cmd_config(args):
@@ -602,53 +614,60 @@ def cmd_config(args):
 
 def cmd_stop(args):
     """Stop the running clipboard sync instance"""
-    pid = get_existing_instance_pid()
+    mgr = get_service_manager()
+    info = mgr.get_status()
 
-    if not pid:
-        print("\nNo running instance found.")
+    if info.status != ServiceStatus.RUNNING:
+        print("\nNot running.")
         return
 
-    print(f"\nStopping clipboard-sync (PID {pid})...")
-
-    try:
-        if os.name == 'nt':
-            # Windows - send SIGTERM equivalent
-            import ctypes
-            PROCESS_TERMINATE = 0x0001
-            kernel32 = ctypes.windll.kernel32
-            handle = kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
-            if handle:
-                kernel32.TerminateProcess(handle, 0)
-                kernel32.CloseHandle(handle)
-                print(f"[OK] Stopped process {pid}")
-            else:
-                print(f"[ERROR] Could not stop process {pid} (access denied)")
-        else:
-            # Unix - send SIGTERM
-            os.kill(pid, signal.SIGTERM)
-            print(f"[OK] Sent stop signal to process {pid}")
-    except ProcessLookupError:
-        print(f"[WARN] Process {pid} not found (may have already exited)")
-    except PermissionError:
-        print(f"[ERROR] Permission denied. Try running with sudo/admin.")
-    except Exception as e:
-        print(f"[ERROR] Failed to stop process: {e}")
+    print(f"\nStopping Yank (PID {info.pid})...")
+    ok, msg = mgr.stop()
+    if ok:
+        print(f"[OK] {msg}")
+    else:
+        print(f"[ERROR] {msg}")
 
 
 def cmd_start(args):
     """Start the clipboard sync agent"""
-    # Check for existing instance
+    if args.foreground:
+        _run_foreground(args)
+        return
+
+    # Background mode: delegate to service manager
+    pairing_mgr = get_pairing_manager()
+    if not pairing_mgr.is_paired() and not args.no_security:
+        print("\nNot paired. Run 'yank pair' first.")
+        sys.exit(1)
+
+    mgr = get_service_manager()
+    info = mgr.get_status()
+
+    if info.status == ServiceStatus.RUNNING:
+        print(f"\nYank is already running (PID {info.pid}).")
+        return
+
+    ok, msg = mgr.start()
+    if ok:
+        print(f"\n[OK] {msg}")
+    else:
+        print(f"\n[ERROR] {msg}")
+        sys.exit(1)
+
+
+def _run_foreground(args):
+    """Run the sync agent in the foreground (invoked by service managers)."""
     if not ensure_single_instance("clipboard-sync", args.port):
         existing_pid = get_existing_instance_pid()
         print(f"\n[ERROR] Another instance is already running (PID {existing_pid})")
-        print(f"Stop the existing instance first, or use '{RUN_SCRIPT} stop'")
         sys.exit(1)
 
     manager = get_pairing_manager()
 
     if not manager.is_paired():
         print("\n[WARNING] No device paired!")
-        print(f"Run '{RUN_SCRIPT} pair' first to pair with another device.")
+        print("Run 'yank pair' first to pair with another device.")
         print("Or use '--no-security' to run without pairing (not recommended).\n")
 
         if not args.no_security:
@@ -681,27 +700,91 @@ def cmd_start(args):
         release_singleton()
 
 
+def _auto_install_and_start_service():
+    """Install and start the background service after pairing."""
+    mgr = get_service_manager()
+    ok, msg = mgr.install_and_start()
+    if ok:
+        print("[OK] Service started (auto-starts on login)")
+    else:
+        print(f"  Could not auto-start: {msg}")
+        print("  Start manually with 'yank start'")
+
+
+def cmd_logs(args):
+    """View service logs"""
+    import subprocess as sp
+
+    mgr = get_service_manager()
+
+    if args.follow:
+        cmd = mgr.get_log_follow_command()
+    else:
+        cmd = mgr.get_log_command(lines=args.lines)
+
+    if cmd:
+        try:
+            sp.run(cmd)
+        except KeyboardInterrupt:
+            pass
+        return
+
+    # Fallback: read log file directly
+    log_path = mgr.get_log_path()
+    if not log_path:
+        # Try default log location
+        from yank import config
+        log_path = str(config.LOG_FILE)
+
+    from pathlib import Path
+    path = Path(log_path)
+    if not path.exists():
+        print(f"No log file found at {log_path}")
+        return
+
+    if args.follow:
+        try:
+            sp.run(["tail", "-f", str(path)])
+        except (KeyboardInterrupt, FileNotFoundError):
+            # Windows fallback: poll the file
+            import time
+            with open(path, 'r') as f:
+                f.seek(0, 2)  # end of file
+                while True:
+                    line = f.readline()
+                    if line:
+                        print(line, end='')
+                    else:
+                        time.sleep(0.5)
+    else:
+        lines = path.read_text().splitlines()
+        for line in lines[-args.lines:]:
+            print(line)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=f'LAN Clipboard Sync - {PLATFORM_NAME}',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
 Commands:
-  start       Start the clipboard sync agent (default)
-  stop        Stop the running instance
+  start       Start the service (background by default)
+  stop        Stop the running service
   pair        Enter pairing mode - displays PIN for other device
   join        Pair with another device using IP and PIN
-  unpair      Remove current pairing
-  status      Show pairing status
+  unpair      Remove current pairing and uninstall service
+  status      Show service and pairing status
   config      Show/edit configuration
+  logs        View service logs
 
 Examples:
-  python -m main                          Start syncing
-  python -m main pair                     Show PIN for pairing
-  python -m main join 192.168.1.5 123456  Pair with device
-  python -m main status                   Check pairing status
-  python -m main config                   View configuration
-  python -m main config --set sync_text false  Disable text sync
+  yank pair                            Pair and auto-start service
+  yank join 192.168.1.5 482913         Pair with device
+  yank status                          Check status
+  yank logs -f                         Follow logs
+  yank stop                            Stop the service
+  yank start                           Restart the service
+  yank config --set sync_text false    Disable text sync
 """
     )
 
@@ -713,6 +796,7 @@ Examples:
     start_parser.add_argument('--port', type=int, default=config.PORT, help=f'Port (default: {config.PORT})')
     start_parser.add_argument('-v', '--verbose', action='store_true', help='Verbose logging')
     start_parser.add_argument('--no-security', action='store_true', help='Disable pairing requirement (not recommended)')
+    start_parser.add_argument('--foreground', action='store_true', help='Run in foreground (used by service manager)')
 
     # Pair command
     pair_parser = subparsers.add_parser('pair', help='Enter pairing mode')
@@ -738,6 +822,11 @@ Examples:
     config_parser.add_argument('--reset', action='store_true', help='Reset to default configuration')
     config_parser.add_argument('--set', nargs=2, metavar=('KEY', 'VALUE'), help='Set a configuration value')
 
+    # Logs command
+    logs_parser = subparsers.add_parser('logs', help='View service logs')
+    logs_parser.add_argument('-f', '--follow', action='store_true', help='Follow log output')
+    logs_parser.add_argument('-n', '--lines', type=int, default=50, help='Number of lines to show (default: 50)')
+
     args = parser.parse_args()
 
     # Default to start if no command
@@ -747,6 +836,7 @@ Examples:
         args.port = config.PORT
         args.verbose = False
         args.no_security = False
+        args.foreground = False
 
     # Route to command handler
     if args.command == 'start':
@@ -763,6 +853,8 @@ Examples:
         cmd_status(args)
     elif args.command == 'config':
         cmd_config(args)
+    elif args.command == 'logs':
+        cmd_logs(args)
     else:
         parser.print_help()
 

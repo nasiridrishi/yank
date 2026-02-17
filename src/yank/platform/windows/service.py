@@ -1,191 +1,184 @@
 """
-Windows Service Wrapper
+Windows Service Manager
 
-Allows clipboard-sync to run as a Windows Service using pywin32.
-Can also be installed via NSSM for simpler setup.
+Manages Yank using Task Scheduler for auto-start on login and a detached
+process for the running service. Replaces the old pywin32 Windows Service
+approach which ran in Session 0 and could not access the user's clipboard.
 """
-import sys
 import os
+import sys
+import subprocess
 import logging
 from pathlib import Path
+from typing import Tuple, Optional, List
 
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-try:
-    import win32serviceutil
-    import win32service
-    import win32event
-    import servicemanager
-    HAS_WIN32_SERVICE = True
-except ImportError:
-    HAS_WIN32_SERVICE = False
-    print("pywin32 service support not available")
-
-from yank import config
-from yank.agent import SyncAgent
-from yank.platform.windows.clipboard import WindowsClipboardMonitor
+from yank.common.service_manager import ServiceManager, ServiceInfo, ServiceStatus
 
 logger = logging.getLogger(__name__)
 
 
-class ClipboardSyncService:
-    """
-    Windows Service class for Clipboard Sync
-    """
-    
-    _svc_name_ = "ClipboardSync"
-    _svc_display_name_ = "LAN Clipboard File Sync"
-    _svc_description_ = "Syncs clipboard files between Windows and Mac over LAN"
-    
+class WindowsServiceManager(ServiceManager):
+
+    TASK_NAME = "YankClipboardSync"
+
     def __init__(self):
-        self.agent = None
-        self.clipboard_monitor = None
-        self.running = False
-    
-    def start(self):
-        """Start the service"""
-        logger.info("Starting Clipboard Sync Service...")
-        
-        # Setup logging to file
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=[logging.FileHandler(config.LOG_FILE)]
-        )
-        
-        # Create components
-        self.agent = SyncAgent(
-            on_files_received=self._on_files_received,
-            port=config.PORT
-        )
-        
-        self.clipboard_monitor = WindowsClipboardMonitor(
-            on_files_copied=self._on_files_copied,
-            poll_interval=config.POLL_INTERVAL
-        )
-        
-        # Start
-        self.agent.start()
-        self.clipboard_monitor.start()
-        self.running = True
-        
-        logger.info("Clipboard Sync Service started")
-    
-    def stop(self):
-        """Stop the service"""
-        logger.info("Stopping Clipboard Sync Service...")
-        self.running = False
-        
-        if self.clipboard_monitor:
-            self.clipboard_monitor.stop()
-        if self.agent:
-            self.agent.stop()
-        
-        logger.info("Clipboard Sync Service stopped")
-    
-    def _on_files_copied(self, file_paths):
-        """Handle files copied"""
-        self.agent.send_files(file_paths)
-    
-    def _on_files_received(self, file_paths):
-        """Handle files received"""
-        self.clipboard_monitor.set_clipboard_files(file_paths)
+        local_app = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        self._log_dir = local_app / "Yank" / "Logs"
+        self._log_path = self._log_dir / "yank.log"
 
-
-if HAS_WIN32_SERVICE:
-    class WindowsService(win32serviceutil.ServiceFramework):
-        """
-        pywin32 service framework wrapper
-        """
-        _svc_name_ = ClipboardSyncService._svc_name_
-        _svc_display_name_ = ClipboardSyncService._svc_display_name_
-        _svc_description_ = ClipboardSyncService._svc_description_
-        
-        def __init__(self, args):
-            win32serviceutil.ServiceFramework.__init__(self, args)
-            self.stop_event = win32event.CreateEvent(None, 0, 0, None)
-            self.service = ClipboardSyncService()
-        
-        def SvcStop(self):
-            self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
-            win32event.SetEvent(self.stop_event)
-            self.service.stop()
-        
-        def SvcDoRun(self):
-            servicemanager.LogMsg(
-                servicemanager.EVENTLOG_INFORMATION_TYPE,
-                servicemanager.PYS_SERVICE_STARTED,
-                (self._svc_name_, '')
+    def is_available(self) -> bool:
+        try:
+            result = subprocess.run(
+                ["schtasks", "/Query", "/FO", "LIST"],
+                capture_output=True, timeout=5,
             )
-            self.service.start()
-            
-            # Wait for stop signal
-            win32event.WaitForSingleObject(self.stop_event, win32event.INFINITE)
+            return result.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
 
+    def get_log_path(self) -> Optional[str]:
+        return str(self._log_path)
 
-def install_service():
-    """Install the Windows service"""
-    if not HAS_WIN32_SERVICE:
-        print("pywin32 service support not available")
-        return
-    
-    print("Installing Clipboard Sync Service...")
-    sys.argv = ['', 'install']
-    win32serviceutil.HandleCommandLine(WindowsService)
+    def get_log_command(self, lines: int = 50) -> Optional[List[str]]:
+        # PowerShell: Get-Content -Tail
+        return [
+            "powershell", "-NoProfile", "-Command",
+            f"Get-Content -Path '{self._log_path}' -Tail {lines}",
+        ]
 
+    def get_log_follow_command(self) -> Optional[List[str]]:
+        return [
+            "powershell", "-NoProfile", "-Command",
+            f"Get-Content -Path '{self._log_path}' -Tail 50 -Wait",
+        ]
 
-def uninstall_service():
-    """Uninstall the Windows service"""
-    if not HAS_WIN32_SERVICE:
-        print("pywin32 service support not available")
-        return
-    
-    print("Uninstalling Clipboard Sync Service...")
-    sys.argv = ['', 'remove']
-    win32serviceutil.HandleCommandLine(WindowsService)
+    # ── install / uninstall ──────────────────────────────────────────
 
+    def install(self) -> Tuple[bool, str]:
+        try:
+            self._log_dir.mkdir(parents=True, exist_ok=True)
 
-def print_nssm_instructions():
-    """Print instructions for NSSM installation (simpler alternative)"""
-    print("""
-=== NSSM Installation (Recommended) ===
+            args = self.get_service_args()
+            # Build the /TR argument — quote the executable, append rest
+            exe = args[0]
+            rest = " ".join(args[1:])
+            tr = f'"{exe}" {rest}' if rest else f'"{exe}"'
 
-NSSM (Non-Sucking Service Manager) provides an easier way to run as a service.
+            result = subprocess.run(
+                [
+                    "schtasks", "/Create",
+                    "/TN", self.TASK_NAME,
+                    "/TR", tr,
+                    "/SC", "ONLOGON",
+                    "/RL", "LIMITED",
+                    "/F",
+                ],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode != 0:
+                return False, f"schtasks create failed: {result.stderr.strip()}"
 
-1. Download NSSM from: https://nssm.cc/download
+            return True, "Scheduled task created"
+        except Exception as e:
+            return False, str(e)
 
-2. Extract and run as Admin:
-   nssm install ClipboardSync
+    def uninstall(self) -> Tuple[bool, str]:
+        try:
+            result = subprocess.run(
+                ["schtasks", "/Delete", "/TN", self.TASK_NAME, "/F"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode != 0 and "cannot find" not in result.stderr.lower():
+                return False, f"schtasks delete failed: {result.stderr.strip()}"
 
-3. In the GUI, set:
-   Path: C:\\Path\\To\\python.exe
-   Startup directory: C:\\Path\\To\\clipboard-sync
-   Arguments: -m windows.main
+            return True, "Scheduled task removed"
+        except Exception as e:
+            return False, str(e)
 
-4. Click "Install service"
+    # ── start / stop ─────────────────────────────────────────────────
 
-5. Start the service:
-   nssm start ClipboardSync
+    def start(self) -> Tuple[bool, str]:
+        info = self.get_status()
+        if info.status == ServiceStatus.RUNNING:
+            if self._needs_reinstall():
+                self.stop()
+                self.install()
+            else:
+                return True, f"Already running (PID {info.pid})"
 
-To remove:
-   nssm remove ClipboardSync confirm
-""")
+        if not self._is_task_installed():
+            ok, msg = self.install()
+            if not ok:
+                return False, msg
 
+        try:
+            self._log_dir.mkdir(parents=True, exist_ok=True)
+            args = self.get_service_args()
 
-if __name__ == '__main__':
-    if len(sys.argv) > 1:
-        if sys.argv[1] == 'install':
-            install_service()
-        elif sys.argv[1] == 'uninstall':
-            uninstall_service()
-        elif sys.argv[1] == 'nssm':
-            print_nssm_instructions()
+            CREATE_NEW_PROCESS_GROUP = 0x00000200
+            DETACHED_PROCESS = 0x00000008
+
+            log_handle = open(self._log_path, "a")
+            subprocess.Popen(
+                args,
+                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                stdout=log_handle,
+                stderr=log_handle,
+                stdin=subprocess.DEVNULL,
+            )
+            return True, "Started"
+        except Exception as e:
+            return False, str(e)
+
+    def stop(self) -> Tuple[bool, str]:
+        from yank.common.singleton import get_existing_instance_pid
+        pid = get_existing_instance_pid()
+        if not pid:
+            return True, "Not running"
+
+        try:
+            import ctypes
+            PROCESS_TERMINATE = 0x0001
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
+            if handle:
+                kernel32.TerminateProcess(handle, 0)
+                kernel32.CloseHandle(handle)
+                return True, f"Stopped (PID {pid})"
+            else:
+                return False, f"Could not open process {pid}"
+        except Exception as e:
+            return False, str(e)
+
+    # ── status ───────────────────────────────────────────────────────
+
+    def get_status(self) -> ServiceInfo:
+        from yank.common.singleton import get_existing_instance_pid
+
+        installed = self._is_task_installed()
+        pid = get_existing_instance_pid()
+
+        if pid:
+            return ServiceInfo(status=ServiceStatus.RUNNING, pid=pid, enabled=installed)
+        elif installed:
+            return ServiceInfo(status=ServiceStatus.STOPPED, enabled=True)
         else:
-            print("Usage: python service.py [install|uninstall|nssm]")
-    else:
-        # Run directly (for testing)
-        if HAS_WIN32_SERVICE:
-            win32serviceutil.HandleCommandLine(WindowsService)
-        else:
-            print("Run 'python -m windows.main' instead")
+            return ServiceInfo(status=ServiceStatus.NOT_INSTALLED)
+
+    # ── internal helpers ─────────────────────────────────────────────
+
+    def _is_task_installed(self) -> bool:
+        try:
+            result = subprocess.run(
+                ["schtasks", "/Query", "/TN", self.TASK_NAME],
+                capture_output=True, timeout=5,
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    def _needs_reinstall(self) -> bool:
+        # Could parse schtasks /Query /XML, but for simplicity
+        # we just reinstall on start if the binary path changed.
+        # The install() with /F flag overwrites existing task.
+        return False

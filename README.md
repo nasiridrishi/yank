@@ -64,7 +64,7 @@ sudo pacman -S gtk3
 ```bash
 yank pair
 ```
-Shows a 6-digit PIN.
+Shows a 6-digit PIN and your IP.
 
 **On machine B:**
 ```bash
@@ -72,14 +72,7 @@ yank join 192.168.1.x 123456
 ```
 Replace with actual IP and PIN.
 
-### 2. Start Syncing
-
-Run on both machines:
-```bash
-yank start
-```
-
-That's it. Copy on one machine, paste on the other.
+That's it. The service starts automatically and survives reboots. Copy on one machine, paste on the other.
 
 ---
 
@@ -102,11 +95,19 @@ Files over 10MB use lazy transfer:
 ## Commands
 
 ```bash
-yank start                  # Start syncing
-yank pair                   # Show PIN for pairing
-yank join <IP> <PIN>        # Pair with another device
-yank unpair                 # Remove pairing
-yank status                 # Show pairing status
+# Pairing (one-time)
+yank pair                   # Show PIN for pairing (auto-starts service)
+yank join <IP> <PIN>        # Pair with another device (auto-starts service)
+yank unpair                 # Remove pairing and uninstall service
+
+# Service management
+yank status                 # Show service and pairing status
+yank stop                   # Stop the service
+yank start                  # Start the service
+yank logs                   # View last 50 log lines
+yank logs -f                # Follow logs in real-time
+
+# Configuration
 yank config                 # Show configuration
 yank config --set KEY VAL   # Change setting
 yank --help                 # Show all options
