@@ -29,10 +29,6 @@ echo "deb [signed-by=/usr/share/keyrings/yank.gpg] https://nasiridrishi.github.i
 sudo apt update && sudo apt install yank-clipboard
 ```
 
-**Manual download:**
-
-Standalone binaries are also available from [Releases](https://github.com/nasiridrishi/yank/releases).
-
 ---
 
 ## Quick Start
