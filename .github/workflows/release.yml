@@ -155,7 +155,7 @@ jobs:
           .\wingetcreate.exe update nasiridrishi.Yank -v $version -u $url --submit --token $env:WINGET_TOKEN 2>$null
           if ($LASTEXITCODE -ne 0) {
             # First submission - create new manifest
-            .\wingetcreate.exe new $url -v $version --submit --token $env:WINGET_TOKEN
+            .\wingetcreate.exe new $url --submit --token $env:WINGET_TOKEN
           }
 
   update-apt-repo:
@@ -213,6 +213,7 @@ jobs:
           dpkg-deb --build --root-owner-group "${PKG_DIR}"
 
       - name: Create APT repository
+        id: apt-repo
         uses: morph027/apt-repo-action@main
         with:
           repo-name: yank
@@ -220,6 +221,11 @@ jobs:
           signing-key: ${{ secrets.APT_SIGNING_KEY }}
           import-from-repo-url: https://nasiridrishi.github.io/yank
           import-from-repo-failure-allow: true
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ steps.apt-repo.outputs.dir }}
 
       - name: Deploy to GitHub Pages
         id: deployment
