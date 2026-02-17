@@ -110,26 +110,53 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger Homebrew tap update
+      - name: Update Homebrew formula
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
         run: |
-          VERSION="${GITHUB_REF#refs/tags/}"
-          gh workflow run update-formula.yml \
-            -f version="$VERSION" \
-            -R nasiridrishi/homebrew-tap
+          VERSION="${TAG_NAME#v}"
+
+          # Get sha256 of source tarball
+          SHA256=$(curl -sL "https://github.com/nasiridrishi/yank/archive/refs/tags/${TAG_NAME}.tar.gz" | sha256sum | cut -d' ' -f1)
+
+          # Get current formula content and file sha
+          FORMULA=$(gh api repos/nasiridrishi/homebrew-tap/contents/Formula/yank.rb --jq '.content' | base64 -d)
+          FILE_SHA=$(gh api repos/nasiridrishi/homebrew-tap/contents/Formula/yank.rb --jq '.sha')
+
+          # Update url and sha256
+          FORMULA=$(echo "$FORMULA" | sed "s|archive/refs/tags/v[^\"]*\.tar\.gz|archive/refs/tags/${TAG_NAME}.tar.gz|")
+          FORMULA=$(echo "$FORMULA" | sed "s|sha256 \"[a-f0-9]*\"|sha256 \"${SHA256}\"|")
+
+          # Push update
+          CONTENT=$(echo "$FORMULA" | base64 -w 0)
+          gh api -X PUT repos/nasiridrishi/homebrew-tap/contents/Formula/yank.rb \
+            -f message="Update yank to ${VERSION}" \
+            -f content="$CONTENT" \
+            -f sha="$FILE_SHA"
 
   update-winget:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: release
     runs-on: windows-latest
     steps:
-      - name: Update winget package
-        uses: vedantmgoyal9/winget-releaser@v2
-        with:
-          identifier: nasiridrishi.Yank
-          installers-regex: yank-windows\.exe$
-          token: ${{ secrets.WINGET_TOKEN }}
+      - name: Install wingetcreate
+        run: iwr https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+
+      - name: Submit to winget-pkgs
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          $version = $env:TAG_NAME.TrimStart('v')
+          $url = "https://github.com/nasiridrishi/yank/releases/download/${env:TAG_NAME}/yank-windows.exe"
+
+          # Try update first (works if package already exists)
+          .\wingetcreate.exe update nasiridrishi.Yank -v $version -u $url --submit --token $env:WINGET_TOKEN 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            # First submission - create new manifest
+            .\wingetcreate.exe new $url -v $version --submit --token $env:WINGET_TOKEN
+          }
 
   update-apt-repo:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -151,11 +178,14 @@ jobs:
 
       - name: Extract version from tag
         id: version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: echo "version=${TAG_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Build .deb package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
           PKG_DIR="yank-clipboard_${VERSION}_amd64"
 
           mkdir -p "${PKG_DIR}/DEBIAN"
@@ -164,7 +194,7 @@ jobs:
           cp artifact/yank-linux "${PKG_DIR}/usr/bin/yank"
           chmod 755 "${PKG_DIR}/usr/bin/yank"
 
-          cat > "${PKG_DIR}/DEBIAN/control" << EOF
+          cat > "${PKG_DIR}/DEBIAN/control" <<EOF
           Package: yank-clipboard
           Version: ${VERSION}
           Section: utils
@@ -179,20 +209,17 @@ jobs:
            transfer for large files.
           EOF
 
-          # Remove leading spaces from control file (heredoc indentation)
           sed -i 's/^          //' "${PKG_DIR}/DEBIAN/control"
-
           dpkg-deb --build --root-owner-group "${PKG_DIR}"
 
       - name: Create APT repository
         uses: morph027/apt-repo-action@main
         with:
           repo-name: yank
+          scan-dir: .
           signing-key: ${{ secrets.APT_SIGNING_KEY }}
           import-from-repo-url: https://nasiridrishi.github.io/yank
           import-from-repo-failure-allow: true
-          file: yank-clipboard_${{ steps.version.outputs.version }}_amd64.deb
-          file-target-distro: stable
 
       - name: Deploy to GitHub Pages
         id: deployment
