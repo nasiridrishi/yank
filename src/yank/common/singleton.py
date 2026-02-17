@@ -10,6 +10,7 @@ import os
 import sys
 import socket
 import logging
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -35,6 +36,7 @@ class SingletonLock:
         self.app_name = app_name
         self.port = port
         self._lock_file: Optional[Path] = None
+        self._pid_file: Optional[Path] = None
         self._lock_fd = None
         self._acquired = False
 
@@ -45,6 +47,7 @@ class SingletonLock:
             lock_dir = Path('/tmp')
 
         self._lock_file = lock_dir / f"{app_name}.lock"
+        self._pid_file = lock_dir / f"{app_name}.pid"
 
     def acquire(self) -> bool:
         """
@@ -92,8 +95,16 @@ class SingletonLock:
                     return False
 
             # Write our PID to the lock file
-            self._lock_fd.write(str(os.getpid()))
+            pid_str = str(os.getpid())
+            self._lock_fd.write(pid_str)
             self._lock_fd.flush()
+
+            # Also write to a separate .pid file (not locked, always readable)
+            try:
+                self._pid_file.write_text(pid_str)
+            except Exception as e:
+                logger.debug(f"Could not write .pid file: {e}")
+
             self._acquired = True
             logger.debug(f"Acquired singleton lock (PID {os.getpid()})")
             return True
@@ -135,6 +146,13 @@ class SingletonLock:
                 except:
                     pass
 
+            # Remove pid file
+            if self._pid_file and self._pid_file.exists():
+                try:
+                    self._pid_file.unlink()
+                except:
+                    pass
+
             self._acquired = False
             logger.debug("Released singleton lock")
 
@@ -153,7 +171,17 @@ class SingletonLock:
             return False
 
     def _read_pid_file(self) -> Optional[int]:
-        """Read PID from existing lock file."""
+        """Read PID from .pid file first, then fall back to .lock file."""
+        # Try the separate .pid file first (always readable, even on Windows)
+        try:
+            if self._pid_file and self._pid_file.exists():
+                content = self._pid_file.read_text().strip()
+                if content:
+                    return int(content)
+        except:
+            pass
+
+        # Fall back to the .lock file (may fail on Windows if locked)
         try:
             if self._lock_file and self._lock_file.exists():
                 content = self._lock_file.read_text().strip()
@@ -185,11 +213,61 @@ class SingletonLock:
         except Exception:
             return False
 
+    def _find_pid_by_port(self) -> Optional[int]:
+        """Find the PID of the process listening on our port.
+
+        Returns the PID if found, or None.
+        """
+        try:
+            if os.name == 'nt':
+                # Windows: parse netstat output
+                output = subprocess.check_output(
+                    ['netstat', '-a', '-n', '-o'],
+                    text=True, timeout=5,
+                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+                )
+                for line in output.splitlines():
+                    parts = line.split()
+                    if len(parts) >= 5 and 'LISTENING' in parts:
+                        local_addr = parts[1]
+                        if local_addr.endswith(f':{self.port}'):
+                            pid = int(parts[-1])
+                            if pid > 0:
+                                return pid
+            else:
+                # Unix: use lsof
+                output = subprocess.check_output(
+                    ['lsof', '-ti', f':{self.port}'],
+                    text=True, timeout=5,
+                    stderr=subprocess.DEVNULL
+                )
+                for line in output.strip().splitlines():
+                    line = line.strip()
+                    if line.isdigit():
+                        return int(line)
+        except (subprocess.SubprocessError, FileNotFoundError, ValueError):
+            pass
+        return None
+
     def get_existing_pid(self) -> Optional[int]:
-        """Get PID of existing running instance, if any."""
+        """Get PID of existing running instance, if any.
+
+        Returns:
+            int > 0: PID of the running instance
+            -1: Instance is running (port in use) but PID is unknown
+            None: No instance running
+        """
         pid = self._read_pid_file()
         if pid and self._is_process_running(pid):
             return pid
+
+        # PID file unreadable or stale — check if the port is in use
+        if self._is_port_in_use():
+            found = self._find_pid_by_port()
+            if found:
+                return found
+            return -1  # running but PID unknown
+
         return None
 
     def __enter__(self):

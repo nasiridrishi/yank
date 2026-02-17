@@ -540,7 +540,10 @@ def cmd_status(args):
     # Service status indicator
     if info.status == ServiceStatus.RUNNING:
         indicator = "[RUNNING]"
-        status_line = f"Yank is running (PID {info.pid})"
+        if info.pid and info.pid > 0:
+            status_line = f"Yank is running (PID {info.pid})"
+        else:
+            status_line = "Yank is running (PID unknown)"
     elif info.status == ServiceStatus.STOPPED:
         indicator = "[STOPPED]"
         status_line = "Yank is not running"
@@ -621,7 +624,10 @@ def cmd_stop(args):
         print("\nNot running.")
         return
 
-    print(f"\nStopping Yank (PID {info.pid})...")
+    if info.pid and info.pid > 0:
+        print(f"\nStopping Yank (PID {info.pid})...")
+    else:
+        print(f"\nStopping Yank...")
     ok, msg = mgr.stop()
     if ok:
         print(f"[OK] {msg}")
@@ -645,7 +651,10 @@ def cmd_start(args):
     info = mgr.get_status()
 
     if info.status == ServiceStatus.RUNNING:
-        print(f"\nYank is already running (PID {info.pid}).")
+        if info.pid and info.pid > 0:
+            print(f"\nYank is already running (PID {info.pid}).")
+        else:
+            print(f"\nYank is already running.")
         return
 
     ok, msg = mgr.start()
@@ -660,7 +669,10 @@ def _run_foreground(args):
     """Run the sync agent in the foreground (invoked by service managers)."""
     if not ensure_single_instance("clipboard-sync", args.port):
         existing_pid = get_existing_instance_pid()
-        print(f"\n[ERROR] Another instance is already running (PID {existing_pid})")
+        if existing_pid and existing_pid > 0:
+            print(f"\n[ERROR] Another instance is already running (PID {existing_pid})")
+        else:
+            print(f"\n[ERROR] Another instance is already running")
         sys.exit(1)
 
     manager = get_pairing_manager()

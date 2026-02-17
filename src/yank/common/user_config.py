@@ -5,15 +5,29 @@ Manages user-editable settings stored in a JSON file.
 Settings can be toggled without modifying code.
 """
 import json
+import shutil
 import logging
 from pathlib import Path
 from typing import Any, Optional
 from dataclasses import dataclass, asdict, field
 
+from yank.config import get_data_dir
+
 logger = logging.getLogger(__name__)
 
-# Default config file location (same directory as the app)
-CONFIG_FILE = Path(__file__).parent.parent / "config.json"
+# Config file in platform-specific data directory
+CONFIG_FILE = get_data_dir() / "config.json"
+
+# Legacy path (pre-v1.x: relative to source tree). Checked for migration.
+_LEGACY_CONFIG_FILE = Path(__file__).parent.parent / "config.json"
+
+# Migrate legacy config if new location doesn't exist yet
+if not CONFIG_FILE.exists() and _LEGACY_CONFIG_FILE.exists():
+    try:
+        shutil.copy2(_LEGACY_CONFIG_FILE, CONFIG_FILE)
+        logger.info(f"Migrated config from {_LEGACY_CONFIG_FILE} to {CONFIG_FILE}")
+    except Exception as e:
+        logger.debug(f"Could not migrate legacy config: {e}")
 
 # Conversion constant
 MB = 1024 * 1024

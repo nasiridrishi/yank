@@ -198,6 +198,10 @@ class FallbackServiceManager(ServiceManager):
         if not pid:
             return True, "Not running"
 
+        if pid < 0:
+            # Running but PID unknown — cannot send signal
+            return False, "Running but PID unknown; stop manually or kill the process on port 9876"
+
         try:
             if os.name == 'nt':
                 import ctypes
@@ -223,7 +227,11 @@ class FallbackServiceManager(ServiceManager):
         from yank.common.singleton import get_existing_instance_pid
         pid = get_existing_instance_pid()
         if pid:
-            return ServiceInfo(status=ServiceStatus.RUNNING, pid=pid, enabled=False)
+            return ServiceInfo(
+                status=ServiceStatus.RUNNING,
+                pid=pid if pid > 0 else None,
+                enabled=False,
+            )
         return ServiceInfo(status=ServiceStatus.STOPPED, enabled=False)
 
 

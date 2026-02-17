@@ -9,15 +9,29 @@ Supports standard gitignore patterns:
 - Comments: # this is a comment
 """
 import fnmatch
+import shutil
 import logging
 import re
 from pathlib import Path
 from typing import List, Set, Optional
 
+from yank.config import get_data_dir
+
 logger = logging.getLogger(__name__)
 
-# Default syncignore file location
-SYNCIGNORE_FILE = Path(__file__).parent.parent / ".syncignore"
+# Syncignore file in platform-specific data directory
+SYNCIGNORE_FILE = get_data_dir() / ".syncignore"
+
+# Legacy path (pre-v1.x: relative to source tree). Checked for migration.
+_LEGACY_SYNCIGNORE_FILE = Path(__file__).parent.parent / ".syncignore"
+
+# Migrate legacy syncignore if new location doesn't exist yet
+if not SYNCIGNORE_FILE.exists() and _LEGACY_SYNCIGNORE_FILE.exists():
+    try:
+        shutil.copy2(_LEGACY_SYNCIGNORE_FILE, SYNCIGNORE_FILE)
+        logger.info(f"Migrated .syncignore from {_LEGACY_SYNCIGNORE_FILE} to {SYNCIGNORE_FILE}")
+    except Exception as e:
+        logger.debug(f"Could not migrate legacy .syncignore: {e}")
 
 # Default patterns to ignore
 DEFAULT_PATTERNS = """# Clipboard Sync Ignore File

@@ -2,6 +2,7 @@
 Configuration for LAN Clipboard File Sync
 """
 import os
+import sys
 import time
 import shutil
 import logging
@@ -40,6 +41,24 @@ ENCRYPTION_KEY = None  # Set to enable AES encryption (32 bytes)
 
 # Cleanup settings
 TEMP_FILE_MAX_AGE_HOURS = 1  # Delete received files older than this
+
+
+def get_data_dir() -> Path:
+    """Platform-specific directory for user data (config, syncignore).
+
+    Returns a persistent directory that works correctly even when the
+    application is packaged with PyInstaller (where __file__ resolves
+    to a temporary _MEI* directory).
+    """
+    if sys.platform == 'win32':
+        base = Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData' / 'Local'))
+    elif sys.platform == 'darwin':
+        base = Path.home() / 'Library' / 'Application Support'
+    else:
+        base = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config'))
+    d = base / 'Yank'
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def cleanup_old_temp_files():
