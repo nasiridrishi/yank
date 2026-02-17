@@ -104,3 +104,96 @@ jobs:
           generate_release_notes: true
           draft: false
           prerelease: false
+
+  update-homebrew:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Homebrew tap update
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          gh workflow run update-formula.yml \
+            -f version="$VERSION" \
+            -R nasiridrishi/homebrew-tap
+
+  update-winget:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    runs-on: windows-latest
+    steps:
+      - name: Update winget package
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: nasiridrishi.Yank
+          installers-regex: yank-windows\.exe$
+          token: ${{ secrets.WINGET_TOKEN }}
+
+  update-apt-repo:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: yank-linux
+          path: artifact
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build .deb package
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          PKG_DIR="yank-clipboard_${VERSION}_amd64"
+
+          mkdir -p "${PKG_DIR}/DEBIAN"
+          mkdir -p "${PKG_DIR}/usr/bin"
+
+          cp artifact/yank-linux "${PKG_DIR}/usr/bin/yank"
+          chmod 755 "${PKG_DIR}/usr/bin/yank"
+
+          cat > "${PKG_DIR}/DEBIAN/control" << EOF
+          Package: yank-clipboard
+          Version: ${VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Depends: libgtk-3-0, gir1.2-gtk-3.0
+          Maintainer: nasiridrishi <nasiridrishi@users.noreply.github.com>
+          Homepage: https://github.com/nasiridrishi/yank
+          Description: Cross-platform LAN clipboard synchronization tool
+           Yank enables instant clipboard sharing of text, files, and images
+           over local networks with AES-256-GCM encryption and lazy file
+           transfer for large files.
+          EOF
+
+          # Remove leading spaces from control file (heredoc indentation)
+          sed -i 's/^          //' "${PKG_DIR}/DEBIAN/control"
+
+          dpkg-deb --build --root-owner-group "${PKG_DIR}"
+
+      - name: Create APT repository
+        uses: morph027/apt-repo-action@main
+        with:
+          repo-name: yank
+          signing-key: ${{ secrets.APT_SIGNING_KEY }}
+          import-from-repo-url: https://nasiridrishi.github.io/yank
+          import-from-repo-failure-allow: true
+          file: yank-clipboard_${{ steps.version.outputs.version }}_amd64.deb
+          file-target-distro: stable
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
