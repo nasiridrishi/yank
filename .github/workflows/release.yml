@@ -126,7 +126,7 @@ jobs:
 
           # Update url and sha256
           FORMULA=$(echo "$FORMULA" | sed "s|archive/refs/tags/v[^\"]*\.tar\.gz|archive/refs/tags/${TAG_NAME}.tar.gz|")
-          FORMULA=$(echo "$FORMULA" | sed "s|sha256 \"[a-f0-9]*\"|sha256 \"${SHA256}\"|")
+          FORMULA=$(echo "$FORMULA" | sed "0,/sha256 \"[a-f0-9]*\"/{s|sha256 \"[a-f0-9]*\"|sha256 \"${SHA256}\"|}")
 
           # Push update
           CONTENT=$(echo "$FORMULA" | base64 -w 0)
@@ -230,8 +230,6 @@ jobs:
            over local networks with AES-256-GCM encryption and lazy file
            transfer for large files.
           EOF
-
-          sed -i 's/^          //' "${PKG_DIR}/DEBIAN/control"
           dpkg-deb --build --root-owner-group "${PKG_DIR}"
 
       - name: Create APT repository

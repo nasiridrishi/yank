@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0
 PackageIdentifier: nasiridrishi.Yank
-PackageVersion: 0.1.0  # UPDATE: Replace with actual version for first submission
+PackageVersion: 1.0.1
 PackageLocale: en-US
 Publisher: nasiridrishi
 PublisherUrl: https://github.com/nasiridrishi
