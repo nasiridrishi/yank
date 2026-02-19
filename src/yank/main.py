@@ -28,7 +28,7 @@ import argparse
 import threading
 from pathlib import Path
 
-from yank import config
+from yank import config, __version__
 from yank.agent import SyncAgent
 from yank.common.protocol import TransferMetadata
 from yank.common.pairing import (
@@ -799,6 +799,7 @@ Examples:
   yank config --set sync_text false    Disable text sync
 """
     )
+    parser.add_argument('--version', action='version', version=f'Yank {__version__}')
 
     subparsers = parser.add_subparsers(dest='command', help='Command to run')
 
@@ -841,14 +842,10 @@ Examples:
 
     args = parser.parse_args()
 
-    # Default to start if no command
+    # Show help if no command given
     if args.command is None:
-        args.command = 'start'
-        args.peer = None
-        args.port = config.PORT
-        args.verbose = False
-        args.no_security = False
-        args.foreground = False
+        parser.print_help()
+        sys.exit(0)
 
     # Route to command handler
     if args.command == 'start':
