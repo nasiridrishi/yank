@@ -35,9 +35,13 @@ class LinuxServiceManager(ServiceManager):
 
     UNIT_NAME = "yank.service"
 
+    # Package-provided unit path (shipped in .deb / rpm)
+    SYSTEM_UNIT_PATH = Path("/usr/lib/systemd/user")
+
     def __init__(self):
         config_dir = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
         self._unit_path = config_dir / "systemd" / "user" / self.UNIT_NAME
+        self._system_unit_path = self.SYSTEM_UNIT_PATH / self.UNIT_NAME
 
     def is_available(self) -> bool:
         try:
@@ -110,7 +114,7 @@ class LinuxServiceManager(ServiceManager):
     # ── start / stop ─────────────────────────────────────────────────
 
     def start(self) -> Tuple[bool, str]:
-        if not self._unit_path.exists():
+        if not self._unit_path.exists() and not self._system_unit_path.exists():
             ok, msg = self.install()
             if not ok:
                 return False, msg
@@ -143,7 +147,7 @@ class LinuxServiceManager(ServiceManager):
     # ── status ───────────────────────────────────────────────────────
 
     def get_status(self) -> ServiceInfo:
-        if not self._unit_path.exists():
+        if not self._unit_path.exists() and not self._system_unit_path.exists():
             return ServiceInfo(status=ServiceStatus.NOT_INSTALLED)
 
         result = self._systemctl(

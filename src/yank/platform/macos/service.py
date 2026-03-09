@@ -19,9 +19,11 @@ logger = logging.getLogger(__name__)
 class MacOSServiceManager(ServiceManager):
 
     PLIST_NAME = "com.yank.agent.plist"
+    HOMEBREW_PLIST_NAME = "homebrew.mxcl.yank.plist"
 
     def __init__(self):
         self._plist_path = Path.home() / "Library" / "LaunchAgents" / self.PLIST_NAME
+        self._homebrew_plist_path = Path.home() / "Library" / "LaunchAgents" / self.HOMEBREW_PLIST_NAME
         self._log_dir = Path.home() / "Library" / "Logs" / "Yank"
         self._log_path = self._log_dir / "yank.log"
         self._uid = os.getuid()
@@ -124,6 +126,9 @@ class MacOSServiceManager(ServiceManager):
 
     def get_status(self) -> ServiceInfo:
         if not self._plist_path.exists():
+            # Check for Homebrew-managed plist (brew services start yank)
+            if self._homebrew_plist_path.exists():
+                return self._get_homebrew_status()
             return ServiceInfo(status=ServiceStatus.NOT_INSTALLED)
 
         result = self._launchctl("print", f"gui/{self._uid}/{self.SERVICE_LABEL}", check=False)
@@ -131,6 +136,20 @@ class MacOSServiceManager(ServiceManager):
             return ServiceInfo(status=ServiceStatus.STOPPED, enabled=True)
 
         # Parse PID from launchctl print output
+        pid = self._parse_pid(result.stdout)
+        if pid and pid > 0:
+            return ServiceInfo(status=ServiceStatus.RUNNING, pid=pid, enabled=True)
+
+        return ServiceInfo(status=ServiceStatus.STOPPED, enabled=True)
+
+    def _get_homebrew_status(self) -> ServiceInfo:
+        """Check status of Homebrew-managed LaunchAgent."""
+        # Homebrew uses label "homebrew.mxcl.yank"
+        homebrew_label = "homebrew.mxcl.yank"
+        result = self._launchctl("print", f"gui/{self._uid}/{homebrew_label}", check=False)
+        if result.returncode != 0:
+            return ServiceInfo(status=ServiceStatus.STOPPED, enabled=True)
+
         pid = self._parse_pid(result.stdout)
         if pid and pid > 0:
             return ServiceInfo(status=ServiceStatus.RUNNING, pid=pid, enabled=True)

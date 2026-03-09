@@ -537,6 +537,13 @@ def cmd_status(args):
     svc_mgr = get_service_manager()
     info = svc_mgr.get_status()
 
+    # Self-healing: auto-install service when paired but not installed
+    if info.status == ServiceStatus.NOT_INSTALLED and manager.is_paired():
+        ok, msg = svc_mgr.install()
+        if ok:
+            info = svc_mgr.get_status()  # refresh
+            print("\n[OK] Service auto-installed. Run 'yank start' to begin syncing.")
+
     # Service status indicator
     if info.status == ServiceStatus.RUNNING:
         indicator = "[RUNNING]"

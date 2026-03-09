@@ -212,9 +212,25 @@ jobs:
 
           mkdir -p "${PKG_DIR}/DEBIAN"
           mkdir -p "${PKG_DIR}/usr/bin"
+          mkdir -p "${PKG_DIR}/usr/lib/systemd/user"
 
           cp artifact/yank-linux "${PKG_DIR}/usr/bin/yank"
           chmod 755 "${PKG_DIR}/usr/bin/yank"
+
+          cat > "${PKG_DIR}/usr/lib/systemd/user/yank.service" <<UNIT
+          [Unit]
+          Description=Yank - LAN Clipboard Sync
+          After=graphical-session.target
+
+          [Service]
+          Type=simple
+          ExecStart=/usr/bin/yank start --foreground
+          Restart=on-failure
+          RestartSec=5
+
+          [Install]
+          WantedBy=default.target
+          UNIT
 
           cat > "${PKG_DIR}/DEBIAN/control" <<EOF
           Package: yank-clipboard
