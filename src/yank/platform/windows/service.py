@@ -117,11 +117,12 @@ class WindowsServiceManager(ServiceManager):
 
             CREATE_NEW_PROCESS_GROUP = 0x00000200
             DETACHED_PROCESS = 0x00000008
+            CREATE_NO_WINDOW = 0x08000000
 
             log_handle = open(self._log_path, "a")
             subprocess.Popen(
                 args,
-                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
                 stdout=log_handle,
                 stderr=log_handle,
                 stdin=subprocess.DEVNULL,

@@ -68,7 +68,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=['hooks/hook-yank-console.py'] if PLATFORM == 'Windows' else [],
     excludes=[
         'tkinter',
         'matplotlib',
@@ -122,7 +122,7 @@ elif PLATFORM == 'Windows':
         upx=True,
         upx_exclude=[],
         runtime_tmpdir=None,
-        console=True,
+        console=False,
         disable_windowed_traceback=False,
         argv_emulation=False,
         target_arch=None,
