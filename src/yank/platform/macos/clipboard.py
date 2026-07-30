@@ -471,56 +471,6 @@ class MacClipboardMonitor:
         with self._received_files_lock:
             self._received_files.clear()
 
-    def set_virtual_clipboard_files(
-        self,
-        files: List[dict],
-        transfer_id: str,
-        download_callback: Callable[[str, int], Optional[bytes]]
-    ) -> bool:
-        """
-        Set virtual files on the clipboard for on-demand download.
-
-        On macOS, this uses a placeholder approach since NSFilePromiseProvider
-        doesn't work with Finder copy/paste (only drag-drop).
-
-        Args:
-            files: List of file info dicts with 'name', 'size', 'checksum', 'file_index'
-            transfer_id: The transfer ID for downloading
-            download_callback: Function to call when file content is needed
-
-        Returns:
-            True if successful
-        """
-        try:
-            from macos.virtual_clipboard import set_virtual_clipboard
-
-            # Track files to avoid loops
-            with self._received_files_lock:
-                for f in files:
-                    # Mark the staging path as received
-                    staging_path = Path.home() / ".clipboard-sync" / "staging" / transfer_id[:8] / f['name']
-                    self._received_files.add(str(staging_path).lower())
-
-            # Update hash to avoid re-sending
-            with self._lock:
-                file_names = '|'.join(sorted(f['name'] for f in files))
-                self._last_content_hash = hashlib.md5(file_names.encode()).hexdigest()
-
-            result = set_virtual_clipboard(files, transfer_id, download_callback)
-
-            if result:
-                # Update change count after setting clipboard
-                self._last_change_count = self._pasteboard.changeCount()
-
-            return result
-
-        except ImportError:
-            logger.error("Virtual clipboard module not available")
-            return False
-        except Exception as e:
-            logger.error(f"Failed to set virtual clipboard: {e}")
-            return False
-
 
 def get_clipboard_files() -> List[Path]:
     """

@@ -285,16 +285,34 @@ Implement iCloud-like clipboard sync where:
 - `common/file_registry.py` - Transfer tracking
 - `common/chunked_transfer.py` - Chunk read/write utilities
 - `common/progress.py` - Progress tracking
-- `windows/virtual_clipboard.py` - IDataObject implementation
-- `macos/virtual_clipboard.py` - NSFilePresenter implementation
+- ~~`windows/virtual_clipboard.py` - IDataObject implementation~~ (removed, see below)
+- ~~`macos/virtual_clipboard.py` - NSFilePresenter implementation~~ (removed, see below)
 
 ### Modified Files:
 - `common/protocol.py` - New message types
 - `agent.py` - Announce, request, chunk handling
 - `main.py` - New flow integration
-- `windows/clipboard.py` - Virtual file support
-- `macos/clipboard.py` - Virtual file support
+- ~~`windows/clipboard.py` - Virtual file support~~ (removed, see below)
+- ~~`macos/clipboard.py` - Virtual file support~~ (removed, see below)
 - `common/user_config.py` - New settings (chunk_size, transfer_timeout)
+
+### Virtual clipboard: removed (issue #9)
+
+The virtual-clipboard modules were never reachable -- both monitors imported them from a
+top-level `macos.` / `windows.` package that does not exist, so the `ModuleNotFoundError`
+was swallowed by `except ImportError: return False` and the code never executed.
+
+They were deleted rather than repaired. The staged filename came straight from the peer's
+announcement with no sanitization and was joined onto
+`~/.clipboard-sync/staging/<transfer_id>/`, so a peer announcing `../../pairing.json` could
+have overwritten the shared AES-256 key store. The implementation also did not do what it
+claimed: it wrote 0-byte placeholders, reported "ready to paste" immediately, then eagerly
+downloaded in a background thread -- behaviorally identical to the auto-download fallback
+that every announced transfer already used, but leaving an unbounded staging directory
+behind.
+
+Announced transfers now always take the auto-download path in
+`ClipboardSync._on_files_announced`, which sets the clipboard once the download completes.
 
 ---
 
