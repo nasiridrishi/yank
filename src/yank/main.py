@@ -711,6 +711,11 @@ def _run_foreground(args):
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
+    # Windows-only: 'yank stop' sends CTRL_BREAK_EVENT to the agent's process
+    # group, which arrives as SIGBREAK. Without a handler the default
+    # disposition kills us before cleanup, stranding the singleton lock/PID.
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, signal_handler)
 
     try:
         app.start()
