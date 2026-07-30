@@ -46,7 +46,61 @@ logger = logging.getLogger(__name__)
 CF_HDROP = 15  # File list format
 CF_DIB = 8     # Device Independent Bitmap
 CF_DIBV5 = 17  # DIB v5 (with alpha)
-CF_PNG = None  # Will be registered dynamically
+
+
+def _get_clipboard_sequence_number() -> Optional[int]:
+    """
+    Read the Windows clipboard sequence number.
+
+    Unlike OpenClipboard(), GetClipboardSequenceNumber() takes no clipboard lock,
+    so it is cheap enough to call on every poll. The value is bumped by the OS
+    every time any process changes the clipboard contents.
+
+    Returns:
+        Current sequence number, or None if it could not be read. The API returns
+        0 on failure (for example without WINSTA_ACCESSCLIPBOARD access), in which
+        case callers should fall back to inspecting the clipboard directly.
+    """
+    if not HAS_WIN32:
+        return None
+
+    try:
+        get_sequence = windll.user32.GetClipboardSequenceNumber
+        get_sequence.argtypes = []
+        get_sequence.restype = UINT
+        return get_sequence() or None
+    except Exception as e:
+        logger.debug(f"Could not read clipboard sequence number: {e}")
+        return None
+
+
+def _register_png_format() -> Optional[int]:
+    """
+    Register the "PNG" clipboard format.
+
+    Returns:
+        The registered format id, or None if it could not be registered.
+    """
+    try:
+        win32clipboard.OpenClipboard()
+    except Exception as e:
+        logger.debug(f"Could not open clipboard to register PNG format: {e}")
+        return None
+
+    try:
+        fmt = win32clipboard.RegisterClipboardFormat("PNG")
+    except Exception as e:
+        logger.debug(f"Could not register PNG clipboard format: {e}")
+        fmt = None
+    finally:
+        # Must always run: leaking the global clipboard lock here would break
+        # copy/paste in every application on the machine until we exit.
+        try:
+            win32clipboard.CloseClipboard()
+        except Exception as e:
+            logger.debug(f"Could not close clipboard after PNG registration: {e}")
+
+    return fmt or None
 
 
 class WindowsClipboardMonitor:
@@ -98,9 +152,14 @@ class WindowsClipboardMonitor:
 
         self._running = False
         self._monitor_thread: Optional[threading.Thread] = None
-        self._last_clipboard_hash: Optional[str] = None
+        # File lists and image data are hashed differently, so they need separate
+        # slots. Sharing one field made a received image echo back to the peer:
+        # set_clipboard_files() stored the file-list hash, then the image branch
+        # compared the image-data hash against it and never matched.
+        self._last_file_hash: Optional[str] = None
+        self._last_image_hash: Optional[str] = None
         self._last_text_hash: Optional[str] = None
-        self._last_change_count: int = 0
+        self._last_change_count: Optional[int] = None
         self._lock = threading.Lock()
 
         # Track files/text we've received to avoid loops
@@ -109,20 +168,18 @@ class WindowsClipboardMonitor:
         self._received_text_hash: Optional[str] = None
         self._received_text_lock = threading.Lock()
 
-        # Register PNG clipboard format
-        global CF_PNG
-        try:
-            win32clipboard.OpenClipboard()
-            CF_PNG = win32clipboard.RegisterClipboardFormat("PNG")
-            win32clipboard.CloseClipboard()
-        except:
-            CF_PNG = None
-    
+        # Register PNG clipboard format (per instance, not a mutated module global)
+        self._cf_png: Optional[int] = _register_png_format()
+
     def start(self):
         """Start monitoring the clipboard"""
         if self._running:
             return
-        
+
+        # Seed the sequence number so whatever was already on the clipboard before
+        # we started is not broadcast to the peer (same as the macOS monitor).
+        self._last_change_count = _get_clipboard_sequence_number()
+
         self._running = True
         self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self._monitor_thread.start()
@@ -153,6 +210,17 @@ class WindowsClipboardMonitor:
     
     def _check_clipboard(self):
         """Check clipboard for file, image, or text changes"""
+        # Lock-free change detection first. OpenClipboard() takes the *global*
+        # clipboard lock, so taking it ~3x/second (just to ask which formats are
+        # present) makes copy/paste intermittently fail in other applications.
+        # The sequence number needs no lock, so only open when it actually moved.
+        sequence = _get_clipboard_sequence_number()
+        if sequence is not None:
+            with self._lock:
+                if sequence == self._last_change_count:
+                    return
+                self._last_change_count = sequence
+
         try:
             win32clipboard.OpenClipboard()
 
@@ -163,7 +231,8 @@ class WindowsClipboardMonitor:
                 elif self.sync_images and HAS_PIL and (
                         win32clipboard.IsClipboardFormatAvailable(CF_DIB) or
                         win32clipboard.IsClipboardFormatAvailable(CF_DIBV5) or
-                        (CF_PNG and win32clipboard.IsClipboardFormatAvailable(CF_PNG))):
+                        (self._cf_png and
+                         win32clipboard.IsClipboardFormatAvailable(self._cf_png))):
                     self._handle_image()
                 elif self.sync_text and win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
                     self._handle_text()
@@ -190,9 +259,9 @@ class WindowsClipboardMonitor:
         
         # Check if this is new
         with self._lock:
-            if clipboard_hash == self._last_clipboard_hash:
+            if clipboard_hash == self._last_file_hash:
                 return
-            self._last_clipboard_hash = clipboard_hash
+            self._last_file_hash = clipboard_hash
         
         # Check if these are files we just received (avoid loops)
         with self._received_files_lock:
@@ -218,31 +287,31 @@ class WindowsClipboardMonitor:
         image_format = None
         
         # Try PNG first (best quality, supports transparency)
-        if CF_PNG and win32clipboard.IsClipboardFormatAvailable(CF_PNG):
+        if self._cf_png and win32clipboard.IsClipboardFormatAvailable(self._cf_png):
             try:
-                image_data = win32clipboard.GetClipboardData(CF_PNG)
+                image_data = win32clipboard.GetClipboardData(self._cf_png)
                 image_format = 'png'
-            except:
+            except Exception:
                 pass
-        
+
         # Fall back to DIB
         if not image_data and win32clipboard.IsClipboardFormatAvailable(CF_DIB):
             try:
                 image_data = win32clipboard.GetClipboardData(CF_DIB)
                 image_format = 'dib'
-            except:
+            except Exception:
                 pass
-        
+
         if not image_data:
             return
-        
+
         # Create hash to detect changes
-        data_hash = hashlib.md5(image_data[:4096] if len(image_data) > 4096 else image_data).hexdigest()
-        
+        data_hash = self._hash_image_data(image_data)
+
         with self._lock:
-            if data_hash == self._last_clipboard_hash:
+            if data_hash == self._last_image_hash:
                 return
-            self._last_clipboard_hash = data_hash
+            self._last_image_hash = data_hash
         
         # Convert to image file
         try:
@@ -333,7 +402,7 @@ class WindowsClipboardMonitor:
         """Handle text clipboard data"""
         try:
             text = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
-        except:
+        except Exception:
             return
 
         if not text or not text.strip():
@@ -362,6 +431,11 @@ class WindowsClipboardMonitor:
         """Create a hash of file list for change detection"""
         content = '|'.join(sorted(str(p) for p in file_paths))
         return hashlib.md5(content.encode()).hexdigest()
+
+    @staticmethod
+    def _hash_image_data(image_data: bytes) -> str:
+        """Create a hash of raw image data for change detection"""
+        return hashlib.md5(image_data[:4096]).hexdigest()
 
     def set_clipboard_text(self, text: str):
         """
@@ -414,7 +488,7 @@ class WindowsClipboardMonitor:
         
         # Update our hash to avoid re-sending
         with self._lock:
-            self._last_clipboard_hash = self._hash_file_list(file_paths)
+            self._last_file_hash = self._hash_file_list(file_paths)
         
         # Check if it's a single image file - put as image data too
         if len(file_paths) == 1 and HAS_PIL:
@@ -476,19 +550,30 @@ class WindowsClipboardMonitor:
             png_output = io.BytesIO()
             Image.open(image_path).save(png_output, 'PNG')
             png_data = png_output.getvalue()
-            
+
+            # Remember the hash of the image bytes we are about to publish, hashed
+            # exactly the way _handle_image() will hash them when it reads them
+            # back. Without this the next poll re-sends the image we just received
+            # whenever sync_files is off and sync_images is on (issue #16).
+            # This has to happen *before* the data hits the clipboard: the monitor
+            # thread can poll in between, and would find an unrecognised image.
+            with self._lock:
+                self._last_image_hash = self._hash_image_data(
+                    png_data if self._cf_png else dib_data
+                )
+
             # Set clipboard with multiple formats
             win32clipboard.OpenClipboard()
             try:
                 win32clipboard.EmptyClipboard()
-                
+
                 # Set DIB (most compatible)
                 win32clipboard.SetClipboardData(CF_DIB, dib_data)
-                
+
                 # Set PNG (better quality)
-                if CF_PNG:
-                    win32clipboard.SetClipboardData(CF_PNG, png_data)
-                
+                if self._cf_png:
+                    win32clipboard.SetClipboardData(self._cf_png, png_data)
+
                 # Also set as file for file-based paste
                 import struct
                 dropfiles_size = 20
@@ -590,6 +675,11 @@ def get_clipboard_files() -> List[Path]:
             data = win32clipboard.GetClipboardData(CF_HDROP)
             if data:
                 return [Path(f) for f in data if Path(f).exists()]
+
+            # CF_HDROP was advertised but held nothing usable. Return explicitly:
+            # callers unpack this as a list, so falling off the end here (and
+            # returning None) would give them a TypeError.
+            return []
         finally:
             win32clipboard.CloseClipboard()
     except Exception as e:
