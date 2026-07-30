@@ -7,6 +7,7 @@ Covers:
 - Self-healing: auto-install when paired but service missing
 """
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock, PropertyMock
 
@@ -18,8 +19,13 @@ from yank.common.service_manager import ServiceInfo, ServiceStatus
 # ── macOS: Homebrew plist detection ──────────────────────────────────────
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS-only service manager")
 class TestMacOSHomebrewDetection:
-    """MacOSServiceManager.get_status() should detect Homebrew-managed plist."""
+    """MacOSServiceManager.get_status() should detect Homebrew-managed plist.
+
+    macOS-only: MacOSServiceManager.__init__ calls os.getuid(), which does not
+    exist on Windows.
+    """
 
     @pytest.fixture(autouse=True)
     def setup(self, tmp_path):
