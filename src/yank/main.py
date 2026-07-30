@@ -62,12 +62,24 @@ else:
     sys.exit(1)
 
 # Setup logging
+#
+# Log records carry arbitrary clipboard text and filenames, so the log file must be
+# opened with an explicit encoding. Without one, Python uses the locale codepage --
+# cp1252 on most Windows installs -- and any emoji, CJK character or curly quote
+# makes the write fail, losing the record. "errors" additionally tolerates the lone
+# surrogates that Windows filenames can carry, which even UTF-8 rejects; it was only
+# added to FileHandler in Python 3.9 and this package supports 3.8.
+if sys.version_info >= (3, 9):
+    _log_file_handler = logging.FileHandler(config.LOG_FILE, encoding="utf-8", errors="replace")
+else:
+    _log_file_handler = logging.FileHandler(config.LOG_FILE, encoding="utf-8")
+
 logging.basicConfig(
     level=getattr(logging, config.LOG_LEVEL),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(config.LOG_FILE)
+        _log_file_handler
     ]
 )
 logger = logging.getLogger(__name__)
@@ -287,7 +299,7 @@ class ClipboardSync:
         text_size = len(text.encode('utf-8'))
         if text_size > self.user_config.max_text_size:
             logger.warning(f"Text too large ({format_size(text_size)}), ignoring")
-            print(f"⚠ Text too large ({format_size(text_size)}). Max: {format_size(self.user_config.max_text_size)}")
+            print(f"! Text too large ({format_size(text_size)}). Max: {format_size(self.user_config.max_text_size)}")
             return
 
         logger.info(f"Sending text to peer ({len(text)} chars)...")

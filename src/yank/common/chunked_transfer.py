@@ -359,7 +359,7 @@ class ProgressTracker:
         # Progress bar
         bar_width = 20
         filled = int(bar_width * percent / 100)
-        bar = '█' * filled + '░' * (bar_width - filled)
+        bar = '#' * filled + '-' * (bar_width - filled)
 
         return f"[{bar}] {percent:.1f}% ({transferred}/{total}) - {speed} - ETA: {eta}"
 
