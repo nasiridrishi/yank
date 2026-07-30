@@ -92,9 +92,22 @@ class MacClipboardMonitor:
         self._running = False
         self._monitor_thread: Optional[threading.Thread] = None
         self._last_change_count: int = 0
-        self._last_content_hash: Optional[str] = None
+        # One hash per kind of clipboard content. These MUST stay separate: a
+        # file-list hash and an image-data hash are drawn from different
+        # domains, so comparing one against the other never matches and the
+        # de-duplication silently degrades into an echo loop (an injected image
+        # file gets re-sent to the peer as a fresh image copy).
+        self._last_file_hash: Optional[str] = None
+        self._last_image_hash: Optional[str] = None
         self._last_text_hash: Optional[str] = None
         self._lock = threading.Lock()
+
+        # Serialises "write to the pasteboard, then record its changeCount"
+        # against the monitor thread's "read changeCount, then record it".
+        # Without it the poller can observe an injection mid-write and treat it
+        # as a fresh user copy. Re-entrant because set_clipboard_files() ->
+        # _set_clipboard_image_file() -> _set_clipboard_files_only() nests.
+        self._pasteboard_lock = threading.RLock()
 
         # Track files/text we've received to avoid loops
         self._received_files: set = set()
@@ -111,8 +124,9 @@ class MacClipboardMonitor:
             return
         
         # Initialize change count
-        self._last_change_count = self._pasteboard.changeCount()
-        
+        with self._pasteboard_lock:
+            self._last_change_count = self._pasteboard.changeCount()
+
         self._running = True
         self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self._monitor_thread.start()
@@ -137,24 +151,35 @@ class MacClipboardMonitor:
     
     def _check_clipboard(self):
         """Check clipboard for file, image, or text changes"""
-        # Check if clipboard changed
-        current_count = self._pasteboard.changeCount()
+        # Sample the pasteboard while holding the injection lock. set_clipboard_*
+        # holds the same lock across "write, then record the new changeCount", so
+        # the poller either runs entirely before the write (and sees the old
+        # count) or entirely after it (and sees a count that already matches
+        # _last_change_count). Either way an injected item is never mistaken for
+        # a fresh user copy.
+        with self._pasteboard_lock:
+            # Check if clipboard changed
+            current_count = self._pasteboard.changeCount()
 
-        if current_count == self._last_change_count:
-            return
+            if current_count == self._last_change_count:
+                return
 
-        # Get available types
-        types = self._pasteboard.types()
+            # Get available types
+            types = self._pasteboard.types()
 
-        # Re-check change count - if clipboard changed during read, skip this cycle
-        # to avoid processing inconsistent data
-        post_read_count = self._pasteboard.changeCount()
-        if post_read_count != current_count:
-            self._last_change_count = post_read_count
-            return
+            # Re-check change count - if clipboard changed during read, skip this cycle
+            # to avoid processing inconsistent data
+            post_read_count = self._pasteboard.changeCount()
+            if post_read_count != current_count:
+                self._last_change_count = post_read_count
+                return
 
-        self._last_change_count = current_count
+            self._last_change_count = current_count
 
+        # The handlers re-read the pasteboard and then invoke user callbacks
+        # (which send over the network). They run outside the lock so a slow
+        # callback cannot stall an incoming paste; the per-kind content hashes
+        # below are what protect the handlers from acting on an injection.
         # Priority: Files first, then images, then text
         if self.sync_files and NSFilenamesPboardType in types:
             self._handle_files()
@@ -174,10 +199,10 @@ class MacClipboardMonitor:
         file_hash = self._hash_file_list(file_paths)
         
         with self._lock:
-            if file_hash == self._last_content_hash:
+            if file_hash == self._last_file_hash:
                 return
-            self._last_content_hash = file_hash
-        
+            self._last_file_hash = file_hash
+
         # Check if these are files we just received (avoid loops)
         with self._received_files_lock:
             if all(str(p).lower() in self._received_files for p in file_paths):
@@ -207,14 +232,17 @@ class MacClipboardMonitor:
             # Get bytes for hashing
             data_bytes = bytes(image_data)
             
-            # Create hash to detect changes
-            data_hash = hashlib.md5(data_bytes[:4096] if len(data_bytes) > 4096 else data_bytes).hexdigest()
-            
+            # Create hash to detect changes. Hash the whole payload: two
+            # different images that happen to share a leading chunk (same
+            # header, same first rows of pixels) would otherwise collide and
+            # the second one would never be sent.
+            data_hash = self._hash_image_data(data_bytes)
+
             with self._lock:
-                if data_hash == self._last_content_hash:
+                if data_hash == self._last_image_hash:
                     return
-                self._last_content_hash = data_hash
-            
+                self._last_image_hash = data_hash
+
             # Save to temp file
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"clipboard_image_{timestamp}.png"
@@ -326,6 +354,16 @@ class MacClipboardMonitor:
         content = '|'.join(sorted(str(p) for p in file_paths))
         return hashlib.md5(content.encode()).hexdigest()
 
+    @staticmethod
+    def _hash_image_data(data: bytes) -> str:
+        """Create a hash of raw image bytes for change detection.
+
+        Compared only against other image hashes (never against a file-list
+        hash), and always over the full payload so distinct images with a
+        common prefix stay distinct.
+        """
+        return hashlib.md5(data).hexdigest()
+
     def set_clipboard_text(self, text: str):
         """
         Set text in the clipboard
@@ -346,9 +384,12 @@ class MacClipboardMonitor:
             self._last_text_hash = text_hash
 
         try:
-            self._pasteboard.clearContents()
-            self._pasteboard.setString_forType_(text, NSPasteboardTypeString)
-            self._last_change_count = self._pasteboard.changeCount()
+            # Write and record the resulting changeCount atomically with respect
+            # to the monitor thread (see _check_clipboard).
+            with self._pasteboard_lock:
+                self._pasteboard.clearContents()
+                self._pasteboard.setString_forType_(text, NSPasteboardTypeString)
+                self._last_change_count = self._pasteboard.changeCount()
             logger.info(f"Set text in clipboard ({len(text)} chars)")
         except Exception as e:
             logger.error(f"Failed to set clipboard text: {e}")
@@ -374,33 +415,34 @@ class MacClipboardMonitor:
         
         # Update our hash to avoid re-sending
         with self._lock:
-            self._last_content_hash = self._hash_file_list(file_paths)
-        
+            self._last_file_hash = self._hash_file_list(file_paths)
+
         # Check if it's a single image file - put as image data too
         if len(file_paths) == 1:
             ext = file_paths[0].suffix.lower()
             if ext in ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp'):
                 self._set_clipboard_image_file(file_paths[0])
                 return
-        
+
         try:
-            # Clear and prepare pasteboard
-            self._pasteboard.clearContents()
-            
-            # Convert paths to filenames
-            filenames = [str(p) for p in file_paths]
-            
-            # Set as filenames (for Finder paste)
-            self._pasteboard.setPropertyList_forType_(
-                NSArray.arrayWithArray_(filenames),
-                NSFilenamesPboardType
-            )
-            
-            # Update change count tracking
-            self._last_change_count = self._pasteboard.changeCount()
-            
+            with self._pasteboard_lock:
+                # Clear and prepare pasteboard
+                self._pasteboard.clearContents()
+
+                # Convert paths to filenames
+                filenames = [str(p) for p in file_paths]
+
+                # Set as filenames (for Finder paste)
+                self._pasteboard.setPropertyList_forType_(
+                    NSArray.arrayWithArray_(filenames),
+                    NSFilenamesPboardType
+                )
+
+                # Update change count tracking
+                self._last_change_count = self._pasteboard.changeCount()
+
             logger.info(f"Set {len(file_paths)} file(s) in clipboard")
-            
+
         except Exception as e:
             logger.error(f"Failed to set clipboard files: {e}")
     
@@ -429,25 +471,35 @@ class MacClipboardMonitor:
                     # Fallback: just set as file
                     self._set_clipboard_files_only([image_path])
                     return
-            
-            # Clear and prepare pasteboard
-            self._pasteboard.clearContents()
-            
-            # Set PNG data for image paste
-            png_ns_data = NSData.dataWithBytes_length_(png_data, len(png_data))
-            self._pasteboard.setData_forType_(png_ns_data, NSPasteboardTypePNG)
-            
-            # Also set as file for file-based paste
-            self._pasteboard.setPropertyList_forType_(
-                NSArray.arrayWithArray_([str(image_path)]),
-                NSFilenamesPboardType
-            )
-            
-            # Update change count tracking
-            self._last_change_count = self._pasteboard.changeCount()
-            
+
+            # Arm BOTH guards before touching the pasteboard. This write puts
+            # image data on the pasteboard as well as a filename, so the next
+            # poll may take either branch depending on the sync_files /
+            # sync_images toggles - recording only the file-list hash here is
+            # what used to let a received image echo straight back to the peer.
+            with self._lock:
+                self._last_file_hash = self._hash_file_list([image_path])
+                self._last_image_hash = self._hash_image_data(png_data)
+
+            with self._pasteboard_lock:
+                # Clear and prepare pasteboard
+                self._pasteboard.clearContents()
+
+                # Set PNG data for image paste
+                png_ns_data = NSData.dataWithBytes_length_(png_data, len(png_data))
+                self._pasteboard.setData_forType_(png_ns_data, NSPasteboardTypePNG)
+
+                # Also set as file for file-based paste
+                self._pasteboard.setPropertyList_forType_(
+                    NSArray.arrayWithArray_([str(image_path)]),
+                    NSFilenamesPboardType
+                )
+
+                # Update change count tracking
+                self._last_change_count = self._pasteboard.changeCount()
+
             logger.info(f"Set image in clipboard: {image_path.name}")
-            
+
         except Exception as e:
             logger.error(f"Failed to set clipboard image: {e}")
             # Fall back to file-only
@@ -455,14 +507,20 @@ class MacClipboardMonitor:
     
     def _set_clipboard_files_only(self, file_paths: List[Path]):
         """Set files in clipboard (without image conversion)"""
+        # Arm the file guard here too so this method is safe to call directly
+        # and not only as a fallback from set_clipboard_files().
+        with self._lock:
+            self._last_file_hash = self._hash_file_list(file_paths)
+
         try:
-            self._pasteboard.clearContents()
-            filenames = [str(p) for p in file_paths]
-            self._pasteboard.setPropertyList_forType_(
-                NSArray.arrayWithArray_(filenames),
-                NSFilenamesPboardType
-            )
-            self._last_change_count = self._pasteboard.changeCount()
+            with self._pasteboard_lock:
+                self._pasteboard.clearContents()
+                filenames = [str(p) for p in file_paths]
+                self._pasteboard.setPropertyList_forType_(
+                    NSArray.arrayWithArray_(filenames),
+                    NSFilenamesPboardType
+                )
+                self._last_change_count = self._pasteboard.changeCount()
         except Exception as e:
             logger.error(f"Failed to set clipboard files: {e}")
     
