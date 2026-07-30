@@ -219,12 +219,21 @@ class WindowsClipboardMonitor:
             with self._lock:
                 if sequence == self._last_change_count:
                     return
-                self._last_change_count = sequence
 
         try:
             win32clipboard.OpenClipboard()
 
             try:
+                # Consume the change only now that the open succeeded. Doing it
+                # before would drop the copy for good whenever the source app is
+                # still holding the clipboard - the exact contention this method
+                # is trying to be a good citizen about. Doing it after dispatch
+                # would instead let a handler that raises every time re-open the
+                # clipboard on every poll, which is the lock hogging we just fixed.
+                if sequence is not None:
+                    with self._lock:
+                        self._last_change_count = sequence
+
                 # Priority: Files first, then images, then text
                 if self.sync_files and win32clipboard.IsClipboardFormatAvailable(CF_HDROP):
                     self._handle_files()

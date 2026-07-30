@@ -56,6 +56,8 @@ class FakeWin32Clipboard:
         self.png_format = png_format
         self.register_error = None
         self.open_error = None
+        # Formats that are advertised but blow up on read (delayed rendering)
+        self.get_errors: dict = {}
         self.calls: list = []
         self.open_count = 0
         self.close_count = 0
@@ -96,6 +98,8 @@ class FakeWin32Clipboard:
         return fmt in self.contents
 
     def GetClipboardData(self, fmt):
+        if fmt in self.get_errors:
+            raise self.get_errors[fmt]
         if fmt not in self.contents:
             raise RuntimeError(f"clipboard format {fmt} not available")
         return self.contents[fmt]
@@ -236,6 +240,69 @@ class TestSequenceNumberGate:
         monitor._check_clipboard()
 
         assert win_env.clipboard.open_count == 1
+
+    def test_a_failed_open_does_not_consume_the_change(self, win_env, tmp_path):
+        """
+        The sequence number must only be committed once the open succeeded.
+
+        Committing it up front would drop the copy permanently whenever the
+        source application is still holding the clipboard - which is precisely
+        the contention this polling change is meant to be gentle about.
+        """
+        received = []
+        monitor = make_monitor(win_env, tmp_path, on_text_copied=received.append)
+        monitor._last_change_count = win_env.sequence.value
+        text = "copied while another app held the lock"
+        win_env.clipboard.contents[CF_UNICODETEXT] = text
+
+        # The source app bumps the sequence number, then keeps the lock a while
+        win_env.sequence.bump()
+        win_env.clipboard.open_error = RuntimeError("clipboard busy")
+        monitor._check_clipboard()
+        assert received == []
+
+        # It lets go: the copy must still be delivered, not silently swallowed
+        win_env.clipboard.open_error = None
+        monitor._check_clipboard()
+
+        assert received == [text]
+
+    def test_a_failed_open_recovers_on_a_later_poll(self, win_env, tmp_path):
+        received = []
+        monitor = make_monitor(win_env, tmp_path, on_text_copied=received.append)
+        monitor._last_change_count = win_env.sequence.value
+        win_env.clipboard.contents[CF_UNICODETEXT] = "eventually consistent"
+
+        win_env.sequence.bump()
+        win_env.clipboard.open_error = RuntimeError("clipboard busy")
+        monitor._check_clipboard()
+        win_env.clipboard.open_error = None
+
+        for _ in range(10):
+            monitor._check_clipboard()
+
+        # Delivered exactly once across the recovery polls
+        assert received == ["eventually consistent"]
+
+    def test_a_handler_that_keeps_raising_does_not_reopen_every_poll(self, win_env, tmp_path):
+        """
+        The flip side: committing *after* dispatch would let one unreadable
+        clipboard item re-take the global lock ~3x/second forever.
+        """
+        sent = []
+        monitor = make_monitor(win_env, tmp_path, on_files_copied=sent.append)
+        monitor._last_change_count = win_env.sequence.value
+        win_env.clipboard.contents[CF_HDROP] = (str(tmp_path / "whatever.txt"),)
+        win_env.clipboard.get_errors[CF_HDROP] = RuntimeError("delayed rendering failed")
+
+        win_env.sequence.bump()
+        for _ in range(5):
+            monitor._check_clipboard()
+
+        assert sent == []
+        # One attempt for the one change, not one per poll
+        assert win_env.clipboard.open_count == 1
+        assert win_env.clipboard.close_count == 1
 
     def test_start_seeds_sequence_number_and_ignores_preexisting_content(self, win_env, tmp_path):
         sent = []
