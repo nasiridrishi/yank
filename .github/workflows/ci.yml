@@ -29,8 +29,19 @@ jobs:
         include:
           - os: macos-latest
             extras: macos
+            pytest_args: ''
           - os: windows-latest
             extras: windows
+            # tests/unit/test_service_status.py::TestMacOSHomebrewDetection has
+            # no platform skip guard, so it runs on Windows and errors 5 times:
+            # it constructs MacOSServiceManager, and macos/service.py:29 calls
+            # os.getuid(), which does not exist on Windows. That is a test-suite
+            # portability bug, not a CI bug, and fixing tests/ is out of scope
+            # for this workflow. Deselect it so the Windows leg reflects real
+            # regressions instead of failing on every PR. Remove this once the
+            # class is guarded with @pytest.mark.skipif(sys.platform != 'darwin')
+            # - a stale nodeid here is harmless, --deselect no-ops if unmatched.
+            pytest_args: '--deselect tests/unit/test_service_status.py::TestMacOSHomebrewDetection'
 
     runs-on: ${{ matrix.os }}
 
@@ -56,7 +67,7 @@ jobs:
           pip install -e ".[dev,${{ matrix.extras }}]"
 
       - name: Run tests
-        run: pytest
+        run: pytest ${{ matrix.pytest_args }}
 
       # Blocking lint. Deliberately scoped to a subset of the project's ruff
       # config that is already clean across src/ and tests/, so this acts as a
