@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+# One run per PR (or per branch). A new push supersedes the in-flight run for
+# the same ref, so stale PR runs get cancelled instead of burning runner time.
+# Pushes to master are never cancelled - they are the record of what landed.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+
+    # No ubuntu job on purpose. Yank targets Windows and macOS; the Linux
+    # platform package (src/yank/platform/linux/) is known-broken and out of
+    # scope, so a Linux leg would fail immediately and red-gate every PR.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            extras: macos
+            pytest_args: ''
+          - os: windows-latest
+            extras: windows
+            # tests/unit/test_service_status.py::TestMacOSHomebrewDetection has
+            # no platform skip guard, so it runs on Windows and errors 5 times:
+            # it constructs MacOSServiceManager, and macos/service.py:29 calls
+            # os.getuid(), which does not exist on Windows. That is a test-suite
+            # portability bug, not a CI bug, and fixing tests/ is out of scope
+            # for this workflow. Deselect it so the Windows leg reflects real
+            # regressions instead of failing on every PR. Remove this once the
+            # class is guarded with @pytest.mark.skipif(sys.platform != 'darwin')
+            # - a stale nodeid here is harmless, --deselect no-ops if unmatched.
+            pytest_args: '--deselect tests/unit/test_service_status.py::TestMacOSHomebrewDetection'
+
+    runs-on: ${{ matrix.os }}
+
+    # The suite runs in ~10s; this only exists so a hung socket or thread in a
+    # future test cannot sit on a runner for the default six hours.
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Editable install so that pytest's `--cov=yank` (hardcoded in
+      # pyproject's addopts) resolves to src/yank rather than site-packages.
+      # The dev extra supplies pytest, pytest-cov, ruff, black and mypy.
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -e ".[dev,${{ matrix.extras }}]"
+
+      - name: Run tests
+        run: pytest ${{ matrix.pytest_args }}
+
+      # Blocking lint. Deliberately scoped to a subset of the project's ruff
+      # config that is already clean across src/ and tests/, so this acts as a
+      # ratchet: it cannot fail unless a change introduces a NEW violation.
+      #   E9    syntax / IO errors
+      #   F63   invalid comparisons
+      #   F7    misplaced statements (break outside loop, etc.)
+      #   C4    comprehension misuse
+      #   E711-E714, E731, E741  comparison and naming correctness
+      # F82 (undefined names) is not included yet: there is one pre-existing
+      # F821 in src/yank/common/chunked_transfer.py. Add F82 here once fixed -
+      # it is the highest-value rule in the set.
+      - name: Lint with ruff (blocking subset)
+        run: ruff check src tests --select E9,F63,F7,C4,E711,E712,E713,E714,E731,E741
+
+      # ---------------------------------------------------------------------
+      # Advisory steps below. These are `continue-on-error: true` on purpose:
+      # the codebase has never been linted, formatted or type-checked, so
+      # hard-gating any of them would fail every PR on day one. They run so the
+      # debt stays visible in the logs. Promote each to blocking (drop the
+      # continue-on-error line) once its backlog reaches zero. As of this
+      # workflow landing: ruff 337, black 38 of 42 files, mypy 167 errors.
+      # ---------------------------------------------------------------------
+
+      - name: Lint with ruff, full rule set (advisory)
+        continue-on-error: true
+        run: ruff check src tests
+
+      - name: Check formatting with black (advisory)
+        continue-on-error: true
+        run: black --check src tests
+
+      - name: Type-check with mypy (advisory)
+        continue-on-error: true
+        run: mypy src
