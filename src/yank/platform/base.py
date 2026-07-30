@@ -12,7 +12,6 @@ class PlatformInfo:
     """Information about a platform"""
     name: str
     display_name: str
-    supports_virtual_clipboard: bool
     copy_shortcut: str
     paste_shortcut: str
 

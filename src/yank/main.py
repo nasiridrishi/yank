@@ -323,11 +323,10 @@ class ClipboardSync:
         """
         Called when files are announced by peer (lazy transfer).
 
-        On Windows: Uses virtual clipboard for true on-demand (download on paste via IDataObject)
-        On macOS: Uses placeholder-based approach (downloads in background as placeholders)
+        An announcement carries metadata only, so the files are pulled from the peer
+        in a background thread and put on the clipboard once the download finishes.
         """
         other_platform = "Mac" if PLATFORM == "Windows" else "Windows"
-        paste_shortcut = "Ctrl+V" if PLATFORM == "Windows" else "Cmd+V"
 
         # Show what files are available
         print(f"\n<< Files announced from {other_platform}:")
@@ -340,67 +339,14 @@ class ClipboardSync:
         # Store for potential later use
         self._pending_transfer_id = transfer_id
 
-        # Try to use virtual clipboard (both Windows and macOS)
-        use_virtual = self._try_set_virtual_clipboard(transfer_id, metadata)
-        if use_virtual:
-            if PLATFORM == "Windows":
-                print(f"\n   Ready to paste ({paste_shortcut}) - download will start when you paste")
-            else:
-                print(f"\n   Ready to paste ({paste_shortcut}) - downloading in background...")
-            return
-
-        # Fall back to auto-download
-        print(f"\n   Downloading files...")
+        # Download in the background; the clipboard is set once it completes
+        print("\n   Downloading files... (clipboard will be set when the download finishes)")
         download_thread = threading.Thread(
             target=self._download_announced_files,
             args=(transfer_id, metadata),
             daemon=True
         )
         download_thread.start()
-
-    def _try_set_virtual_clipboard(self, transfer_id: str, metadata: TransferMetadata) -> bool:
-        """
-        Try to set virtual files on clipboard.
-
-        Windows: Virtual clipboard with IDataObject is complex and unreliable.
-                 Disabled for now - use auto-download instead.
-        macOS: Uses placeholder files that download in background since
-               NSFilePromiseProvider doesn't work with Finder copy/paste.
-
-        Returns True if successful, False to fall back to auto-download.
-        """
-        # Windows virtual clipboard is unreliable - always auto-download
-        if PLATFORM == "Windows":
-            return False
-
-        try:
-            # Prepare file info for virtual clipboard
-            files = [
-                {
-                    'name': f.name,
-                    'size': f.size,
-                    'checksum': f.checksum,
-                    'file_index': f.file_index
-                }
-                for f in metadata.files
-            ]
-
-            # Create download callback that fetches file content on-demand
-            def download_callback(tid: str, file_index: int):
-                return self.agent.download_single_file(tid, file_index)
-
-            # Try to set virtual clipboard
-            success = self.clipboard_monitor.set_virtual_clipboard_files(
-                files,
-                transfer_id,
-                download_callback
-            )
-
-            return success
-
-        except Exception as e:
-            logger.warning(f"Virtual clipboard failed, using auto-download: {e}")
-            return False
 
     def _download_announced_files(self, transfer_id: str, metadata: TransferMetadata):
         """Download announced files in background thread"""

@@ -529,47 +529,6 @@ class WindowsClipboardMonitor:
         with self._received_files_lock:
             self._received_files.clear()
 
-    def set_virtual_clipboard_files(
-        self,
-        files: List[dict],
-        transfer_id: str,
-        download_callback
-    ) -> bool:
-        """
-        Set virtual files on clipboard (true on-demand transfer).
-
-        When user pastes, the download_callback will be called to get file data.
-
-        Args:
-            files: List of file info dicts with 'name', 'size', 'checksum', 'file_index'
-            transfer_id: Transfer ID for the download
-            download_callback: Callable[[str, int], Optional[bytes]] to get file data
-
-        Returns:
-            True if successful
-        """
-        try:
-            from windows.virtual_clipboard import set_virtual_clipboard
-
-            # Track to avoid loops
-            with self._received_files_lock:
-                for f in files:
-                    self._received_files.add(f['name'].lower())
-
-            success = set_virtual_clipboard(files, transfer_id, download_callback)
-
-            if success:
-                logger.info(f"Set {len(files)} virtual file(s) on clipboard")
-
-            return success
-
-        except ImportError as e:
-            logger.warning(f"Virtual clipboard not available: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"Failed to set virtual clipboard: {e}")
-            return False
-
 
 def get_clipboard_files() -> List[Path]:
     """

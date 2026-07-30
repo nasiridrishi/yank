@@ -16,7 +16,6 @@ if _PLATFORM == "win32":
     _platform_info = PlatformInfo(
         name="windows",
         display_name="Windows",
-        supports_virtual_clipboard=False,
         copy_shortcut="Ctrl+C",
         paste_shortcut="Ctrl+V",
     )
@@ -26,7 +25,6 @@ elif _PLATFORM == "darwin":
     _platform_info = PlatformInfo(
         name="macos",
         display_name="macOS",
-        supports_virtual_clipboard=True,
         copy_shortcut="Cmd+C",
         paste_shortcut="Cmd+V",
     )
@@ -36,7 +34,6 @@ elif _PLATFORM.startswith("linux"):
     _platform_info = PlatformInfo(
         name="linux",
         display_name="Linux",
-        supports_virtual_clipboard=True,
         copy_shortcut="Ctrl+C",
         paste_shortcut="Ctrl+V",
     )
