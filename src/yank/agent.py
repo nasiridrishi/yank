@@ -308,6 +308,11 @@ class SyncAgent:
             client_socket.sendall(MessageBuilder.build_pong(key))
 
         elif msg_type == MessageType.FILE_TRANSFER:
+            # Exactly one ACK frame per inbound message. The ACK reports whether the
+            # bytes arrived and unpacked - a failure to inject them into the local
+            # clipboard afterwards is our problem, not the sender's, and must never
+            # put a second frame on the wire (that desyncs the peer's parser).
+            extracted_paths = None
             try:
                 metadata, file_data = MessageParser.parse_file_transfer(payload)
 
@@ -316,33 +321,39 @@ class SyncAgent:
                 extracted_paths = unpack_files(metadata, file_data, dest_dir)
 
                 logger.info(f"Received {len(extracted_paths)} files from peer")
-
-                # Send ACK
-                client_socket.sendall(MessageBuilder.build_ack(True, "Files received", key))
-
-                # Callback to inject into clipboard
-                if self.on_files_received:
-                    self.on_files_received(extracted_paths)
-
+                ack_frame = MessageBuilder.build_ack(True, "Files received", key)
             except Exception as e:
                 logger.error(f"Error processing file transfer: {e}")
-                client_socket.sendall(MessageBuilder.build_ack(False, str(e), key))
+                ack_frame = MessageBuilder.build_ack(False, str(e), key)
+
+            client_socket.sendall(ack_frame)
+
+            # Callback to inject into clipboard (local-only, never re-ACKed)
+            if extracted_paths is not None and self.on_files_received:
+                try:
+                    self.on_files_received(extracted_paths)
+                except Exception as e:
+                    logger.error(f"Error in on_files_received callback: {e}", exc_info=True)
 
         elif msg_type == MessageType.TEXT_TRANSFER:
+            # See the FILE_TRANSFER branch above: one ACK frame, always.
+            text = None
             try:
                 text = MessageParser.parse_text_transfer(payload)
                 logger.info(f"Received text from peer ({len(text)} chars)")
-
-                # Send ACK
-                client_socket.sendall(MessageBuilder.build_text_ack(True, "Text received", key))
-
-                # Callback to inject into clipboard
-                if self.on_text_received:
-                    self.on_text_received(text)
-
+                ack_frame = MessageBuilder.build_text_ack(True, "Text received", key)
             except Exception as e:
                 logger.error(f"Error processing text transfer: {e}")
-                client_socket.sendall(MessageBuilder.build_text_ack(False, str(e), key))
+                ack_frame = MessageBuilder.build_text_ack(False, str(e), key)
+
+            client_socket.sendall(ack_frame)
+
+            # Callback to inject into clipboard (local-only, never re-ACKed)
+            if text is not None and self.on_text_received:
+                try:
+                    self.on_text_received(text)
+                except Exception as e:
+                    logger.error(f"Error in on_text_received callback: {e}", exc_info=True)
 
         # ========== Lazy Transfer Message Handlers ==========
 
