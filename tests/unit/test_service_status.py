@@ -7,6 +7,7 @@ Covers:
 - Self-healing: auto-install when paired but service missing
 """
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock, PropertyMock
 
@@ -15,9 +16,21 @@ import pytest
 from yank.common.service_manager import ServiceInfo, ServiceStatus
 
 
+# MacOSServiceManager.__init__ calls os.getuid(), which does not exist on
+# Windows, so every class that constructs one is darwin-only. A module-level
+# mark would be wrong here: the Linux and cmd_status classes below are
+# platform-agnostic (they only touch mocks and tmp_path) and must keep running
+# everywhere.
+requires_macos = pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="macOS LaunchAgent manager (MacOSServiceManager.__init__ needs os.getuid)",
+)
+
+
 # ── macOS: Homebrew plist detection ──────────────────────────────────────
 
 
+@requires_macos
 class TestMacOSHomebrewDetection:
     """MacOSServiceManager.get_status() should detect Homebrew-managed plist."""
 
@@ -93,10 +106,375 @@ class TestMacOSHomebrewDetection:
         call_args = mock_lctl.call_args[0]
         assert "com.yank.agent" in call_args[1]
 
+    def test_homebrew_running_wins_when_own_plist_is_not_loaded(self):
+        """Both plists present but only the Homebrew agent is loaded."""
+        self.mgr._plist_path.parent.mkdir(parents=True, exist_ok=True)
+        self.mgr._plist_path.write_bytes(b"<plist/>")
+        self.mgr._homebrew_plist_path.write_bytes(b"<plist/>")
+
+        with patch.object(self.mgr, "_launchctl") as mock_lctl:
+            mock_lctl.side_effect = [
+                MagicMock(returncode=113, stdout="", stderr=""),   # com.yank.agent
+                MagicMock(returncode=0, stdout="pid = 4242\n"),    # homebrew.mxcl.yank
+            ]
+            info = self.mgr.get_status()
+
+        assert info.status == ServiceStatus.RUNNING
+        assert info.pid == 4242
+
+    def test_status_survives_launchctl_timeout(self):
+        self.mgr._plist_path.parent.mkdir(parents=True, exist_ok=True)
+        self.mgr._plist_path.write_bytes(b"<plist/>")
+
+        with patch.object(self.mgr, "_launchctl") as mock_lctl:
+            mock_lctl.side_effect = subprocess.TimeoutExpired(cmd="launchctl", timeout=10)
+            info = self.mgr.get_status()
+
+        assert info.status == ServiceStatus.STOPPED
+
+
+# ── macOS: stop / uninstall / start act on the right label ───────────────
+
+
+@requires_macos
+class _MacOSServiceTestBase:
+    """Shared fixture: a MacOSServiceManager rooted in tmp_path.
+
+    subprocess.run is patched out for every test in these classes so a real
+    launchctl invocation can never escape and mutate the host's launchd state.
+
+    The darwin-only mark is inherited by subclasses, so a new subclass cannot
+    accidentally start erroring on the Windows CI leg; it is also repeated on
+    each subclass so the constraint is greppable.
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_path):
+        with patch("yank.platform.macos.service.Path.home", return_value=tmp_path):
+            from yank.platform.macos.service import MacOSServiceManager
+            self.mgr = MacOSServiceManager()
+        self.launch_agents = tmp_path / "Library" / "LaunchAgents"
+        self.launch_agents.mkdir(parents=True)
+
+        def _no_real_launchctl(*args, **kwargs):
+            raise AssertionError(f"real subprocess call escaped: {args!r}")
+
+        with patch("yank.platform.macos.service.subprocess.run") as mock_run:
+            mock_run.side_effect = _no_real_launchctl
+            self.run_mock = mock_run
+            yield
+
+    @staticmethod
+    def _completed(returncode=0, stdout="", stderr=""):
+        return MagicMock(returncode=returncode, stdout=stdout, stderr=stderr)
+
+    def _install_own_plist(self):
+        self.mgr._plist_path.write_bytes(b"<plist/>")
+
+    def _install_homebrew_plist(self):
+        self.mgr._homebrew_plist_path.write_bytes(b"<plist/>")
+
+
+@requires_macos
+class TestMacOSStop(_MacOSServiceTestBase):
+    """stop() must boot out the label that is actually loaded (issue #11)."""
+
+    def test_stops_homebrew_label_when_only_homebrew_plist_exists(self):
+        self._install_homebrew_plist()
+
+        with patch.object(self.mgr, "_launchctl") as mock_lctl:
+            mock_lctl.side_effect = [
+                self._completed(stdout="pid = 777\n"),  # print homebrew.mxcl.yank
+                self._completed(),                      # bootout
+            ]
+            ok, msg = self.mgr.stop()
+
+        assert ok is True
+        bootout_args = mock_lctl.call_args_list[-1][0]
+        assert bootout_args[0] == "bootout"
+        assert bootout_args[1].endswith("/homebrew.mxcl.yank")
+        assert "brew services stop yank" in msg
+
+    def test_stops_own_label_when_own_plist_is_loaded(self):
+        self._install_own_plist()
+        self._install_homebrew_plist()
+
+        with patch.object(self.mgr, "_launchctl") as mock_lctl:
+            mock_lctl.side_effect = [
+                self._completed(stdout="pid = 12\n"),  # print com.yank.agent
+                self._completed(),                     # bootout
+            ]
+            ok, msg = self.mgr.stop()
+
+        assert (ok, msg) == (True, "Stopped")
+        bootout_args = mock_lctl.call_args_list[-1][0]
+        assert bootout_args[1].endswith("/com.yank.agent")
+
+    def test_reports_failure_when_bootout_fails(self):
+        self._install_own_plist()
+
+        with patch.object(self.mgr, "_launchctl") as mock_lctl:
+            mock_lctl.side_effect = [
+                self._completed(stdout="pid = 12\n"),
+                self._completed(returncode=1, stderr="Boot-out failed: 5: Input/output error\n"),
+            ]
+            ok, msg = self.mgr.stop()
+
+        assert ok is False
+        assert "Input/output error" in msg
+        assert "com.yank.agent" in msg
+
+    def test_reports_failure_when_bootout_fails_without_stderr(self):
+        self._install_own_plist()
+
+        with patch.object(self.mgr, "_launchctl") as mock_lctl:
+            mock_lctl.side_effect = [
+                self._completed(stdout="pid = 12\n"),
+                self._completed(returncode=36, stderr=""),
+            ]
+            ok, msg = self.mgr.stop()
+
+        assert ok is False
+        assert "exit code 36" in msg
+
+    def test_bootout_esrch_is_treated_as_already_stopped(self):
+        """The agent can exit between the status probe and the bootout."""
+        self._install_own_plist()
+
+        with patch.object(self.mgr, "_launchctl") as mock_lctl:
+            mock_lctl.side_effect = [
+                self._completed(stdout="pid = 12\n"),
+                self._completed(returncode=3, stderr="Boot-out failed: 3: No such process\n"),
+            ]
+            ok, msg = self.mgr.stop()
+
+        assert (ok, msg) == (True, "Not running")
+
+    def test_reports_failure_when_bootout_times_out(self):
+        self._install_own_plist()
+
+        with patch.object(self.mgr, "_launchctl") as mock_lctl:
+            mock_lctl.side_effect = [
+                self._completed(stdout="pid = 12\n"),
+                subprocess.TimeoutExpired(cmd="launchctl", timeout=10),
+            ]
+            ok, msg = self.mgr.stop()
+
+        assert ok is False
+        assert "timed out" in msg
+
+    def test_not_running_does_not_bootout(self):
+        self._install_own_plist()
+
+        with patch.object(self.mgr, "_launchctl") as mock_lctl:
+            mock_lctl.return_value = self._completed(returncode=113)
+            ok, msg = self.mgr.stop()
+
+        assert (ok, msg) == (True, "Not running")
+        assert all(call[0][0] == "print" for call in mock_lctl.call_args_list)
+
+    def test_nothing_installed_is_not_running(self):
+        with patch.object(self.mgr, "_launchctl") as mock_lctl:
+            ok, msg = self.mgr.stop()
+
+        assert (ok, msg) == (True, "Not running")
+        mock_lctl.assert_not_called()
+
+
+@requires_macos
+class TestMacOSUninstall(_MacOSServiceTestBase):
+    """uninstall() must not silently claim success for a brew-managed agent."""
+
+    def test_homebrew_only_is_reported_not_deleted(self):
+        self._install_homebrew_plist()
+
+        with patch.object(self.mgr, "_launchctl") as mock_lctl:
+            ok, msg = self.mgr.uninstall()
+
+        assert ok is False
+        assert "brew services stop yank" in msg
+        # Homebrew's plist is left for brew to manage
+        assert self.mgr._homebrew_plist_path.exists()
+        mock_lctl.assert_not_called()
+
+    def test_own_plist_removed_and_homebrew_reported(self):
+        self._install_own_plist()
+        self._install_homebrew_plist()
+
+        with patch.object(self.mgr, "_launchctl") as mock_lctl:
+            mock_lctl.return_value = self._completed()
+            ok, msg = self.mgr.uninstall()
+
+        assert ok is True
+        assert not self.mgr._plist_path.exists()
+        assert self.mgr._homebrew_plist_path.exists()
+        assert "brew services stop yank" in msg
+        bootout_args = mock_lctl.call_args_list[-1][0]
+        assert bootout_args[0] == "bootout"
+        assert bootout_args[1].endswith("/com.yank.agent")
+
+    def test_own_plist_only(self):
+        self._install_own_plist()
+
+        with patch.object(self.mgr, "_launchctl") as mock_lctl:
+            mock_lctl.return_value = self._completed()
+            ok, msg = self.mgr.uninstall()
+
+        assert (ok, msg) == (True, "Uninstalled")
+        assert not self.mgr._plist_path.exists()
+
+    def test_nothing_installed(self):
+        with patch.object(self.mgr, "_launchctl") as mock_lctl:
+            ok, msg = self.mgr.uninstall()
+
+        assert (ok, msg) == (True, "Not installed")
+        mock_lctl.assert_not_called()
+
+    def test_bootout_timeout_does_not_block_plist_removal(self):
+        self._install_own_plist()
+
+        with patch.object(self.mgr, "_launchctl") as mock_lctl:
+            mock_lctl.side_effect = subprocess.TimeoutExpired(cmd="launchctl", timeout=10)
+            ok, msg = self.mgr.uninstall()
+
+        assert ok is True
+        assert not self.mgr._plist_path.exists()
+
+
+@requires_macos
+class TestMacOSStart(_MacOSServiceTestBase):
+    """start() error handling and Homebrew awareness (issues #11, #15)."""
+
+    def test_bootstrap_timeout_returns_error_not_traceback(self):
+        self._install_own_plist()
+
+        with patch.object(self.mgr, "_launchctl") as mock_lctl:
+            mock_lctl.side_effect = [
+                self._completed(returncode=113),  # print: not loaded
+                subprocess.TimeoutExpired(cmd="launchctl", timeout=10),  # bootstrap
+            ]
+            ok, msg = self.mgr.start()
+
+        assert ok is False
+        assert "bootstrap timed out" in msg
+
+    def test_kickstart_timeout_returns_error(self):
+        self._install_own_plist()
+
+        with patch.object(self.mgr, "_launchctl") as mock_lctl:
+            mock_lctl.side_effect = [
+                self._completed(returncode=113),  # print: not loaded
+                self._completed(returncode=5),    # bootstrap fails
+                subprocess.TimeoutExpired(cmd="launchctl", timeout=30),  # kickstart
+            ]
+            ok, msg = self.mgr.start()
+
+        assert ok is False
+        assert "kickstart timed out" in msg
+
+    def test_already_running_under_homebrew_does_not_install(self):
+        self._install_homebrew_plist()
+
+        with patch.object(self.mgr, "_launchctl") as mock_lctl, \
+             patch.object(self.mgr, "install") as mock_install:
+            mock_lctl.return_value = self._completed(stdout="pid = 31337\n")
+            ok, msg = self.mgr.start()
+
+        assert ok is True
+        assert "31337" in msg
+        mock_install.assert_not_called()
+        assert not self.mgr._plist_path.exists()
+
+    def test_stopped_homebrew_agent_is_bootstrapped_not_duplicated(self):
+        """Never install a second RunAtLoad agent alongside Homebrew's."""
+        self._install_homebrew_plist()
+
+        with patch.object(self.mgr, "_launchctl") as mock_lctl, \
+             patch.object(self.mgr, "install") as mock_install:
+            mock_lctl.side_effect = [
+                self._completed(returncode=113),  # print: not loaded
+                self._completed(),                # bootstrap
+            ]
+            ok, msg = self.mgr.start()
+
+        assert (ok, msg) == (True, "Started")
+        mock_install.assert_not_called()
+        bootstrap_args = mock_lctl.call_args_list[-1][0]
+        assert bootstrap_args[0] == "bootstrap"
+        assert bootstrap_args[2] == str(self.mgr._homebrew_plist_path)
+
+    def test_installs_own_plist_when_nothing_is_installed(self):
+        with patch.object(self.mgr, "_launchctl") as mock_lctl:
+            mock_lctl.return_value = self._completed()
+            ok, msg = self.mgr.start()
+
+        assert (ok, msg) == (True, "Started")
+        assert self.mgr._plist_path.exists()
+        bootstrap_args = mock_lctl.call_args_list[-1][0]
+        assert bootstrap_args[0] == "bootstrap"
+        assert bootstrap_args[2] == str(self.mgr._plist_path)
+
+    def test_bootstrap_failure_is_reported(self):
+        self._install_own_plist()
+
+        with patch.object(self.mgr, "_launchctl") as mock_lctl:
+            mock_lctl.side_effect = [
+                self._completed(returncode=113),                      # print
+                self._completed(returncode=5, stderr="Bootstrap failed\n"),
+                self._completed(returncode=5, stderr="Bad request\n"),  # kickstart
+            ]
+            ok, msg = self.mgr.start()
+
+        assert ok is False
+        assert "Bad request" in msg
+
+
+@requires_macos
+class TestMacOSLaunchctlWrapper(_MacOSServiceTestBase):
+    """_launchctl must honour its `check` argument (issue #15)."""
+
+    def test_check_is_passed_through_to_subprocess(self):
+        self.run_mock.side_effect = None
+        self.run_mock.return_value = self._completed()
+
+        self.mgr._launchctl("print", "gui/501/com.yank.agent", check=False)
+        assert self.run_mock.call_args.kwargs["check"] is False
+
+        self.mgr._launchctl("print", "gui/501/com.yank.agent")
+        assert self.run_mock.call_args.kwargs["check"] is True
+
+    def test_check_true_raises_on_failure(self):
+        def fake_run(cmd, **kwargs):
+            # Mimic subprocess.run's own contract for check=True
+            if kwargs.get("check"):
+                raise subprocess.CalledProcessError(1, cmd)
+            return self._completed(returncode=1)
+
+        self.run_mock.side_effect = fake_run
+
+        with pytest.raises(subprocess.CalledProcessError):
+            self.mgr._launchctl("bootout", "gui/501/com.yank.agent")
+
+        # check=False keeps the old behaviour: inspect returncode yourself
+        assert self.mgr._launchctl(
+            "bootout", "gui/501/com.yank.agent", check=False
+        ).returncode == 1
+
+    def test_timeout_is_passed_through(self):
+        self.run_mock.side_effect = None
+        self.run_mock.return_value = self._completed()
+
+        self.mgr._launchctl("kickstart", "-k", "gui/501/com.yank.agent", timeout=30)
+        assert self.run_mock.call_args.kwargs["timeout"] == 30
+
 
 # ── Linux: package-provided unit detection ───────────────────────────────
 
 
+# Deliberately NOT marked darwin/linux-only: LinuxServiceManager.__init__ only
+# reads XDG_CONFIG_HOME and Path.home(), the module imports nothing POSIX-only,
+# and every test here drives mocked _systemctl/install against tmp_path. It
+# already runs green on macOS, so it is portable to the Windows leg too.
 class TestLinuxPackageUnitDetection:
     """LinuxServiceManager.get_status() should detect /usr/lib/systemd/user unit."""
 
