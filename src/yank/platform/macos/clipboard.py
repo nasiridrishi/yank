@@ -243,11 +243,18 @@ class MacClipboardMonitor:
                     return
                 self._last_image_hash = data_hash
 
-            # Save to temp file
+            # Save to temp file. The name must be unique: large images are sent
+            # by announcement and read back from disk when the peer pulls them,
+            # so a second image reusing this path would serve the wrong bytes.
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"clipboard_image_{timestamp}.png"
-            filepath = self.temp_dir / filename
-            
+            fd, path_str = tempfile.mkstemp(
+                prefix=f"clipboard_image_{timestamp}_",
+                suffix=".png",
+                dir=self.temp_dir
+            )
+            os.close(fd)
+            filepath = Path(path_str)
+
             # Convert TIFF to PNG if needed
             if NSPasteboardTypeTIFF in self._pasteboard.types() and NSPasteboardTypePNG not in self._pasteboard.types():
                 # Use NSImage to convert
@@ -266,7 +273,7 @@ class MacClipboardMonitor:
                 with open(filepath, 'wb') as f:
                     f.write(data_bytes)
             
-            logger.info(f"Detected image in clipboard, saved to {filename}")
+            logger.info(f"Detected image in clipboard, saved to {filepath.name}")
             
             # Track to avoid loops
             with self._received_files_lock:
