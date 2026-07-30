@@ -7,6 +7,7 @@ Covers:
 - Self-healing: auto-install when paired but service missing
 """
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock, PropertyMock
 
@@ -15,9 +16,21 @@ import pytest
 from yank.common.service_manager import ServiceInfo, ServiceStatus
 
 
+# MacOSServiceManager.__init__ calls os.getuid(), which does not exist on
+# Windows, so every class that constructs one is darwin-only. A module-level
+# mark would be wrong here: the Linux and cmd_status classes below are
+# platform-agnostic (they only touch mocks and tmp_path) and must keep running
+# everywhere.
+requires_macos = pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="macOS LaunchAgent manager (MacOSServiceManager.__init__ needs os.getuid)",
+)
+
+
 # ── macOS: Homebrew plist detection ──────────────────────────────────────
 
 
+@requires_macos
 class TestMacOSHomebrewDetection:
     """MacOSServiceManager.get_status() should detect Homebrew-managed plist."""
 
@@ -123,11 +136,16 @@ class TestMacOSHomebrewDetection:
 # ── macOS: stop / uninstall / start act on the right label ───────────────
 
 
+@requires_macos
 class _MacOSServiceTestBase:
     """Shared fixture: a MacOSServiceManager rooted in tmp_path.
 
     subprocess.run is patched out for every test in these classes so a real
     launchctl invocation can never escape and mutate the host's launchd state.
+
+    The darwin-only mark is inherited by subclasses, so a new subclass cannot
+    accidentally start erroring on the Windows CI leg; it is also repeated on
+    each subclass so the constraint is greppable.
     """
 
     @pytest.fixture(autouse=True)
@@ -157,6 +175,7 @@ class _MacOSServiceTestBase:
         self.mgr._homebrew_plist_path.write_bytes(b"<plist/>")
 
 
+@requires_macos
 class TestMacOSStop(_MacOSServiceTestBase):
     """stop() must boot out the label that is actually loaded (issue #11)."""
 
@@ -262,6 +281,7 @@ class TestMacOSStop(_MacOSServiceTestBase):
         mock_lctl.assert_not_called()
 
 
+@requires_macos
 class TestMacOSUninstall(_MacOSServiceTestBase):
     """uninstall() must not silently claim success for a brew-managed agent."""
 
@@ -321,6 +341,7 @@ class TestMacOSUninstall(_MacOSServiceTestBase):
         assert not self.mgr._plist_path.exists()
 
 
+@requires_macos
 class TestMacOSStart(_MacOSServiceTestBase):
     """start() error handling and Homebrew awareness (issues #11, #15)."""
 
@@ -408,6 +429,7 @@ class TestMacOSStart(_MacOSServiceTestBase):
         assert "Bad request" in msg
 
 
+@requires_macos
 class TestMacOSLaunchctlWrapper(_MacOSServiceTestBase):
     """_launchctl must honour its `check` argument (issue #15)."""
 
@@ -449,6 +471,10 @@ class TestMacOSLaunchctlWrapper(_MacOSServiceTestBase):
 # ── Linux: package-provided unit detection ───────────────────────────────
 
 
+# Deliberately NOT marked darwin/linux-only: LinuxServiceManager.__init__ only
+# reads XDG_CONFIG_HOME and Path.home(), the module imports nothing POSIX-only,
+# and every test here drives mocked _systemctl/install against tmp_path. It
+# already runs green on macOS, so it is portable to the Windows leg too.
 class TestLinuxPackageUnitDetection:
     """LinuxServiceManager.get_status() should detect /usr/lib/systemd/user unit."""
 

@@ -207,6 +207,13 @@ class MacOSServiceManager(ServiceManager):
 
         Returns ``(label, info)``. ``label`` is None only when nothing is
         installed at all; otherwise it is the label to act on.
+
+        Caveat: if both agents were somehow running at once, the tie-break
+        picks ours, so stop() would boot out ours and leave the Homebrew one
+        running while reporting "Stopped". That state is largely unreachable —
+        singleton.py makes the loser of the port-9876 bind exit — and it is no
+        worse than the old behaviour, which never looked at the Homebrew label
+        at all.
         """
         candidates: List[str] = []
         if self._plist_path.exists():
